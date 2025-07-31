@@ -1,0 +1,27 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyc
+
+# Data and storage
+data/storage/
+data/output/
+
+# Logs
+logs/
+scraper.log
+
+# Secrets
+src/config/secrets.py
+
+# Virtual environment
+venv/
+.env
+
+# IDE files
+.vscode/
+.idea/
+
+# Dependency lock files
+Pipfile.lock
+poetry.lock
