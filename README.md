@@ -1,6 +1,6 @@
 # Social Media Scraper
 
-Un scraper modular y asíncrono para extraer datos de Instagram, incluyendo seguidores, seguidos y comentadores de posts.
+Un scraper modular y asíncrono para extraer datos de X, Instagram y Facebook, incluyendo seguidores, seguidos y comentadores de posts.
 
 ## 🚀 Características
 
@@ -73,7 +73,7 @@ social_media_scraper/
 
 ## 🎯 Uso
 
-### Método 1: Interfaz de Menú (Recomendado)
+Interfaz de Menú (Recomendado)
 
 ```bash
 python scripts/run_instagram.py
@@ -86,19 +86,6 @@ El menú te permite elegir:
 4. **Extraer todo** - Seguidores, seguidos y comentadores
 5. **Salir**
 
-### Método 2: Programático
-
-```python
-import asyncio
-from src.scrapers.instagram.scraper import scrap_usuarios_instagram
-
-async def main():
-    url = "https://www.instagram.com/usuario/"
-    datos = await scrap_usuarios_instagram(url, extraer_comentarios=True, max_posts=5)
-    print("¡Scraping completado!")
-
-asyncio.run(main())
-```
 
 ## ⚙️ Configuración
 
