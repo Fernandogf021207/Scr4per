@@ -6,30 +6,30 @@ FACEBOOK_CONFIG = {
     "storage_state_path": "data/storage/facebook_storage_state.json",
 
     "user_cell_selectors": [
-        'div[role="grid"] div[role="row"]',
-        'ul > li > div > div > a[role="link"]'
+        'div[role="main"] div:has(a[tabindex="0"])'
     ],
     "enlace_selectors": [
-        'a[role="link"][href^="/profile.php?id="]',
-        'a[role="link"][href^="/"][tabindex]'
+        'a[tabindex="0"]'
     ],
     "img_selectors": [
-        'image',
-        'img[src*="scontent"]'
+        'a[tabindex="-1"] img'
     ],
     "nombre_usuario_selectors": [
-        'span strong',
-        'div[dir="auto"] span'
+        'a[tabindex="0"]'
     ],
     "foto_selectors": [
-        'image',
-        'img[src*="scontent"]'
+        'img[data-imgperflogname="profileCoverPhoto"]',
+        'div[role="main"] img[referrerpolicy="origin-when-cross-origin"]',
+        'svg[role="img"] + image'
     ],
     "nombre_selectors": [
-        'h1',
-        'span[dir="auto"]'
+        'div[role="main"] span[dir="auto"] h1'
     ],
     "patterns_to_exclude": [
-        '/friends_mutual', '/groups', '/events', '/notifications', '/messages', '/watch'
+        "/followers", "/following", "/friends", "/videos", "/photo", "/photos",
+        "/tv", "/events", "/past_events", "/likes", "/likes_all",
+        "/music", "/sports", "/map", "/movies", "/pages",
+        "/groups", "/watch", "/reel", "/story", "/video_tv_shows_watch",
+        "/games"
     ]
 }
