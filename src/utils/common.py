@@ -1,4 +1,3 @@
-# src/utils/common.py
 def limpiar_url(url):
-    """Limpiar parámetros de consulta de una URL."""
+    """Remove query parameters from a URL"""
     return url.split("?")[0] if url else ""

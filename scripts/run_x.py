@@ -1,7 +1,7 @@
 import sys
 import os
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-   
+
 import asyncio
 from playwright.async_api import async_playwright
 from src.utils.logging_config import setup_logging
@@ -9,10 +9,10 @@ from src.scrapers.x.scraper import (
     obtener_datos_usuario_principal,
     scrap_seguidores,
     scrap_seguidos,
-    scrap_comentadores
+    scrap_comentadores,
+    guardar_resultados
 )
-from src.utils.output import guardar_resultados
-   
+
 logger = setup_logging()
 
 def mostrar_menu():
@@ -34,34 +34,34 @@ async def main_x():
         print("3. Guarda tu sesión ejecutando: await context.storage_state(path='data/storage/x_storage_state.json')")
         print("4. X requiere autenticación para ver seguidores, seguidos y comentarios")
         print()
-           
+        
         url = input("Ingresa la URL del perfil de X (ej: https://x.com/usuario): ")
         if "twitter.com" in url:
             url = url.replace("twitter.com", "x.com")
-           
+        
         async with async_playwright() as p:
             browser = await p.chromium.launch(headless=False)
             context = await browser.new_context(storage_state=X_CONFIG["storage_state_path"])
             page = await context.new_page()
-               
+            
             while True:
                 opcion = mostrar_menu()
-                   
+                
                 if opcion not in ['1', '2', '3', '4', '5']:
                     print("❌ Opción inválida. Por favor, selecciona una opción válida (1-5).")
                     continue
-                   
+                
                 if opcion == '5':
                     print("👋 Saliendo del programa...")
                     break
-                   
+                
                 datos_usuario = await obtener_datos_usuario_principal(page, url)
                 username = datos_usuario['username']
-                   
+                
                 seguidores = []
                 seguidos = []
                 comentadores = []
-                   
+                
                 if opcion in ['1', '4']:
                     seguidores = await scrap_seguidores(page, url, username)
                 
@@ -70,7 +70,7 @@ async def main_x():
                 
                 if opcion in ['3', '4']:
                     comentadores = await scrap_comentadores(page, url, username)
-                   
+                
                 if opcion != '4' and (
                     (opcion == '1' and not seguidores) or
                     (opcion == '2' and not seguidos) or
@@ -82,7 +82,7 @@ async def main_x():
                     print("  - X cambió su estructura")
                     print("  - Necesitas estar logueado para ver estas listas")
                     continue
-                   
+                
                 if opcion == '4' and not seguidores and not seguidos and not comentadores:
                     print("⚠️ No se encontraron datos. Posibles causas:")
                     print("  - El perfil es privado")
@@ -90,18 +90,18 @@ async def main_x():
                     print("  - X cambió su estructura")
                     print("  - Necesitas estar logueado para ver estas listas")
                     continue
-                   
-                archivo_creado = guardar_resultados(username, datos_usuario, seguidores, seguidos, comentadores, platform="x")
-                   
+                
+                archivo_creado = guardar_resultados(username, datos_usuario, seguidores, seguidos, comentadores)
+                
                 print(f"\n🎉 ¡Scraping completado! {archivo_creado}")
-                   
+                
                 continuar = input("\n¿Desea realizar otra operación? (s/n): ").lower()
                 if continuar != 's':
                     print("👋 Saliendo del programa...")
                     break
-               
+            
             await browser.close()
-       
+    
     except KeyboardInterrupt:
         print("\n⚠️ Proceso interrumpido por el usuario")
     except Exception as e:

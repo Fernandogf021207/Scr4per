@@ -1,58 +1,17 @@
 import pandas as pd
 import os
 
-def guardar_resultados(username, datos_usuario, seguidores, seguidos, comentadores, platform="x"):
-    """Guardar los resultados en Excel o CSV, compatible con Instagram y X"""
+def guardar_resultados(username, datos_usuario, seguidores, seguidos, comentadores):
+    """Guardar los resultados en Excel o CSV"""
     usuario_id = 1
-    
-    # Map platform-specific keys to unified column names
-    key_mapping = {
-        "x": {
-            "user_name_key": "nombre_completo",
-            "follower_name_key": "nombre_usuario",
-            "follower_username_key": "username_usuario",
-            "follower_url_key": "link_usuario",
-            "follower_photo_key": "foto_usuario",
-            "following_name_key": "nombre_usuario",
-            "following_username_key": "username_usuario",
-            "following_url_key": "link_usuario",
-            "following_photo_key": "foto_usuario",
-            "commenter_name_key": "nombre_usuario",
-            "commenter_username_key": "username_usuario",
-            "commenter_url_key": "link_usuario",
-            "commenter_photo_key": "foto_usuario",
-            "commenter_post_url_key": "post_url"
-        },
-        "instagram": {
-            "user_name_key": "nombre_completo",
-            "follower_name_key": "nombre_usuario",
-            "follower_username_key": "username_usuario",
-            "follower_url_key": "link_usuario",
-            "follower_photo_key": "foto_usuario",
-            "following_name_key": "nombre_usuario",
-            "following_username_key": "username_usuario",
-            "following_url_key": "link_usuario",
-            "following_photo_key": "foto_usuario",
-            "commenter_name_key": "nombre_mostrado",
-            "commenter_username_key": "username",
-            "commenter_url_key": "url_perfil",
-            "commenter_photo_key": "url_foto",
-            "commenter_post_url_key": "url_post"
-        }
-    }
-
-    keys = key_mapping.get(platform.lower(), key_mapping["x"])
-
-    # Usuario DataFrame
     datos_usuario_df = {
         'id_usuario': [usuario_id],
-        'nombre_usuario': [datos_usuario[keys["user_name_key"]]],
+        'nombre_usuario': [datos_usuario['nombre_completo']],
         'username': [datos_usuario['username']],
         'url_usuario': [datos_usuario['url_usuario']],
-        'url_foto_perfil': [datos_usuario['url_foto_perfil']]
+        'url_foto_perfil': [datos_usuario['foto_perfil']]
     }
     
-    # Seguidores DataFrame
     datos_seguidores = {
         'id_seguidor': [],
         'id_usuario_principal': [],
@@ -62,7 +21,6 @@ def guardar_resultados(username, datos_usuario, seguidores, seguidos, comentador
         'url_foto_perfil_seguidor': []
     }
     
-    # Seguidos DataFrame
     datos_seguidos = {
         'id_seguido': [],
         'id_usuario_principal': [],
@@ -72,7 +30,6 @@ def guardar_resultados(username, datos_usuario, seguidores, seguidos, comentador
         'url_foto_perfil_seguido': []
     }
     
-    # Comentadores DataFrame (named differently for Instagram and X)
     datos_comentadores = {
         'id_comentador': [],
         'id_usuario_principal': [],
@@ -82,47 +39,38 @@ def guardar_resultados(username, datos_usuario, seguidores, seguidos, comentador
         'url_foto_perfil_comentador': [],
         'url_post': []
     }
-    if platform.lower() == "instagram":
-        datos_comentadores['post_id'] = []  # Instagram includes post_id
-
-    # Populate Seguidores
+    
     for i, seguidor in enumerate(seguidores, start=1):
         datos_seguidores['id_seguidor'].append(i)
         datos_seguidores['id_usuario_principal'].append(usuario_id)
-        datos_seguidores['nombre_seguidor'].append(seguidor[keys["follower_name_key"]])
-        datos_seguidores['username_seguidor'].append(seguidor[keys["follower_username_key"]])
-        datos_seguidores['url_seguidor'].append(seguidor[keys["follower_url_key"]])
-        datos_seguidores['url_foto_perfil_seguidor'].append(seguidor[keys["follower_photo_key"]])
+        datos_seguidores['nombre_seguidor'].append(seguidor['nombre_usuario'])
+        datos_seguidores['username_seguidor'].append(seguidor['username_usuario'])
+        datos_seguidores['url_seguidor'].append(seguidor['link_usuario'])
+        datos_seguidores['url_foto_perfil_seguidor'].append(seguidor['foto_usuario'])
     
-    # Populate Seguidos
     for i, seguido in enumerate(seguidos, start=1):
         datos_seguidos['id_seguido'].append(i)
         datos_seguidos['id_usuario_principal'].append(usuario_id)
-        datos_seguidos['nombre_seguido'].append(seguido[keys["following_name_key"]])
-        datos_seguidos['username_seguido'].append(seguido[keys["following_username_key"]])
-        datos_seguidos['url_seguido'].append(seguido[keys["following_url_key"]])
-        datos_seguidos['url_foto_perfil_seguido'].append(seguido[keys["following_photo_key"]])
+        datos_seguidos['nombre_seguido'].append(seguido['nombre_usuario'])
+        datos_seguidos['username_seguido'].append(seguido['username_usuario'])
+        datos_seguidos['url_seguido'].append(seguido['link_usuario'])
+        datos_seguidos['url_foto_perfil_seguido'].append(seguido['foto_usuario'])
     
-    # Populate Comentadores
     for i, comentador in enumerate(comentadores, start=1):
         datos_comentadores['id_comentador'].append(i)
         datos_comentadores['id_usuario_principal'].append(usuario_id)
-        datos_comentadores['nombre_comentador'].append(comentador[keys["commenter_name_key"]])
-        datos_comentadores['username_comentador'].append(comentador[keys["commenter_username_key"]])
-        datos_comentadores['url_comentador'].append(comentador[keys["commenter_url_key"]])
-        datos_comentadores['url_foto_perfil_comentador'].append(comentador[keys["commenter_photo_key"]])
-        datos_comentadores['url_post'].append(comentador[keys["commenter_post_url_key"]])
-        if platform.lower() == "instagram":
-            datos_comentadores['post_id'].append(comentador.get('post_id', ''))
-
+        datos_comentadores['nombre_comentador'].append(comentador['nombre_usuario'])
+        datos_comentadores['username_comentador'].append(comentador['username_usuario'])
+        datos_comentadores['url_comentador'].append(comentador['link_usuario'])
+        datos_comentadores['url_foto_perfil_comentador'].append(comentador['foto_usuario'])
+        datos_comentadores['url_post'].append(comentador['post_url'])
+    
     df_usuario = pd.DataFrame(datos_usuario_df)
     df_seguidores = pd.DataFrame(datos_seguidores)
     df_seguidos = pd.DataFrame(datos_seguidos)
     df_comentadores = pd.DataFrame(datos_comentadores)
     
-    # Adjust sheet name for Instagram
-    commenter_sheet_name = 'Comentarios' if platform.lower() == "instagram" else 'Comentadores'
-    nombre_base = f"{platform.lower()}_scraper_{username}"
+    nombre_base = f"x_scraper_{username}"
     
     try:
         os.makedirs('data/output', exist_ok=True)
@@ -134,7 +82,7 @@ def guardar_resultados(username, datos_usuario, seguidores, seguidos, comentador
             if not df_seguidos.empty:
                 df_seguidos.to_excel(writer, sheet_name='Seguidos', index=False)
             if not df_comentadores.empty:
-                df_comentadores.to_excel(writer, sheet_name=commenter_sheet_name, index=False)
+                df_comentadores.to_excel(writer, sheet_name='Comentadores', index=False)
             
         print(f"\n✅ Archivo Excel creado: {nombre_archivo_excel}")
         print(f"📄 Página 'Usuario': {len(df_usuario)} registro")
@@ -143,7 +91,7 @@ def guardar_resultados(username, datos_usuario, seguidores, seguidos, comentador
         if not df_seguidos.empty:
             print(f"📄 Página 'Seguidos': {len(df_seguidos)} registros")
         if not df_comentadores.empty:
-            print(f"📄 Página '{commenter_sheet_name}': {len(df_comentadores)} registros")
+            print(f"📄 Página 'Comentadores': {len(df_comentadores)} registros")
         return nombre_archivo_excel
         
     except ImportError:
@@ -165,8 +113,8 @@ def guardar_resultados(username, datos_usuario, seguidores, seguidos, comentador
             print(f"📄 Seguidos: {archivo_seguidos}")
         
         if not df_comentadores.empty:
-            archivo_comentadores = f"data/output/{nombre_base}_{commenter_sheet_name.lower()}.csv"
+            archivo_comentadores = f"data/output/{nombre_base}_comentadores.csv"
             df_comentadores.to_csv(archivo_comentadores, index=False)
-            print(f"📄 {commenter_sheet_name}: {archivo_comentadores}")
+            print(f"📄 Comentadores: {archivo_comentadores}")
         
         return nombre_archivo
