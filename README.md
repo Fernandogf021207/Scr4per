@@ -2,23 +2,14 @@
 
 Un scraper modular y asíncrono para extraer datos de X, Instagram y Facebook, incluyendo seguidores, seguidos y comentadores de posts.
 
-## 🚀 Características
 
-- **Scraping asíncrono** con Playwright para mejor rendimiento
-- **Extracción completa** de seguidores, seguidos y comentadores
-- **Interfaz de menú** interactiva para seleccionar tareas específicas
-- **Exportación flexible** a Excel o CSV
-- **Logging detallado** para debugging
-- **Manejo robusto de errores** y rate limiting
-- **Arquitectura modular** extensible a otras plataformas
-
-## 📋 Requisitos
+## Requisitos
 
 - Python 3.8+
 - Cuenta de Instagram (para sesión autenticada)
 - Navegador Chromium (instalado automáticamente por Playwright)
 
-## 🛠️ Instalación
+## Instalación
 
 ### 1. Clonar o descargar el proyecto
 
@@ -45,7 +36,7 @@ Este script:
 - Te ayuda a configurar tu sesión de Instagram
 - Prepara el entorno de trabajo
 
-## 📁 Estructura del Proyecto
+## Estructura del Proyecto
 
 ```
 social_media_scraper/
@@ -71,7 +62,7 @@ social_media_scraper/
 └── README.md
 ```
 
-## 🎯 Uso
+##  Uso
 
 Interfaz de Menú (Recomendado)
 
@@ -87,7 +78,7 @@ El menú te permite elegir:
 5. **Salir**
 
 
-## ⚙️ Configuración
+## Configuración
 
 ### Archivo de Sesión
 
@@ -108,7 +99,7 @@ max_no_new_content = 3           # Scrolls sin contenido nuevo antes de parar
 default_max_posts = 5            # Posts por defecto para comentarios
 ```
 
-## 📊 Formato de Salida
+## Formato de Salida
 
 ### Excel (Preferido)
 Archivo: `data/output/instagram_scraping_<username>.xlsx`
@@ -157,37 +148,8 @@ Si `openpyxl` no está disponible, se crean 4 archivos CSV separados.
 }
 ```
 
-## 🔧 Solución de Problemas
 
-### Perfil Privado
-```
-❌ No se pudo encontrar el enlace de seguidores. ¿El perfil es público?
-```
-**Solución:** Sigue al usuario o usa un perfil público
-
-### Sesión Expirada
-```
-❌ Error navegando a seguidores
-```
-**Solución:** Regenera tu sesión ejecutando `python setup.py`
-
-### Sin Datos Extraídos
-```
-⚠️ No se encontraron datos
-```
-**Posibles causas:**
-- Perfil privado sin seguir
-- Sesión no iniciada/expirada
-- Cambios en la estructura de Instagram
-- Rate limiting de Instagram
-
-### Rate Limiting
-Si Instagram limita tu cuenta:
-1. Aumenta `rate_limit_pause_ms` en `config.py`
-2. Reduce `max_scroll_attempts`
-3. Espera unas horas antes de hacer scraping
-
-## 📝 Logs
+## Logs
 
 Los logs se guardan en `logs/scraper.log` e incluyen:
 - Errores de navegación
@@ -202,34 +164,7 @@ Ejemplo:
 2024-01-15 10:31:20 - WARNING - No se pudo cargar más comentarios: timeout
 ```
 
-## 🛡️ Consideraciones Éticas y Legales
-
-- **Respeta los términos de servicio** de Instagram
-- **Usa datos solo para propósitos legítimos** (investigación, análisis personal)
-- **No hagas scraping masivo** que pueda sobrecargar los servidores
-- **Respeta la privacidad** de los usuarios
-- **Implementa delays apropiados** para evitar ser bloqueado
-
-## 🚀 Extensibilidad
-
-El proyecto está diseñado para ser extensible:
-
-### Agregar Nuevas Plataformas
-```
-src/scrapers/nueva_plataforma/
-├── config.py
-├── utils.py
-├── scraper.py
-└── __init__.py
-```
-
-### Agregar Nuevas Funcionalidades
-- Extracción de stories
-- Análisis de hashtags
-- Métricas de engagement
-- Exportación a bases de datos
-
-## 🤝 Contribuciones
+## Contribuciones
 
 Las contribuciones son bienvenidas:
 
@@ -239,10 +174,10 @@ Las contribuciones son bienvenidas:
 4. Push a la rama (`git push origin feature/AmazingFeature`)
 5. Abre un Pull Request
 
-## 📄 Licencia
+## Licencia
 
 Este proyecto está bajo la Licencia MIT. Ver `LICENSE` para más detalles.
 
-## ⚠️ Disclaimer
+## Disclaimer
 
 Este scraper es para propósitos educativos y de investigación. Los usuarios son responsables de cumplir con los términos de servicio de Instagram y las leyes aplicables en su jurisdicción.

@@ -1,9 +1,11 @@
 import logging
+from urllib.parse import urljoin
 from src.scrapers.facebook.utils import (
     obtener_foto_perfil_facebook,
     obtener_nombre_usuario_facebook,
     procesar_usuarios_en_pagina
 )
+from src.utils.common import limpiar_url
 logger = logging.getLogger(__name__)
 
 async def obtener_datos_usuario_principal(page, perfil_url):
@@ -19,10 +21,8 @@ async def obtener_datos_usuario_principal(page, perfil_url):
 
 async def scrap_lista_usuarios(page, perfil_url):
     from src.scrapers.facebook.config import FACEBOOK_CONFIG
-    from src.utils.common import limpiar_url
     print("\n🔄 Navegando a la lista de amigos...")
     try:
-        from urllib.parse import urljoin
         amigos_url = urljoin(perfil_url, "friends_all")
         await page.goto(amigos_url)
         await page.wait_for_timeout(6000)
@@ -71,4 +71,68 @@ async def scrap_lista_usuarios(page, perfil_url):
 
     except Exception as e:
         print(f"❌ Error extrayendo amigos: {e}")
+        return []
+
+async def scrap_comentadores_facebook(page, perfil_url):
+    from src.scrapers.facebook.config import FACEBOOK_CONFIG
+    print("\n🔄 Navegando al perfil para extraer comentadores...")
+    try:
+        await page.goto(perfil_url)
+        await page.wait_for_timeout(5000)
+
+        posts = await page.query_selector_all('div[role="article"]')
+        comentadores_dict = {}
+        posts_procesados = 0
+
+        for post in posts:
+            if posts_procesados >= FACEBOOK_CONFIG['max_posts']:
+                break
+
+            try:
+                await post.scroll_into_view_if_needed()
+                await page.wait_for_timeout(2000)
+                comentarios = await post.query_selector_all('div[aria-label="Comentario"]')
+                for comentario in comentarios:
+                    try:
+                        enlace_usuario = await comentario.query_selector('a[href^="/"]')
+                        if not enlace_usuario:
+                            continue
+                        href = await enlace_usuario.get_attribute("href")
+                        if not href:
+                            continue
+                        username_usuario = href.strip('/').split('/')[-1]
+                        url_usuario = f"https://www.facebook.com{href}" if href.startswith('/') else href
+                        url_limpia = limpiar_url(url_usuario)
+
+                        if url_limpia in comentadores_dict:
+                            continue
+
+                        img = await comentario.query_selector('img[src*="scontent"]')
+                        foto = await img.get_attribute("src") if img else ""
+
+                        span = await comentario.query_selector('span')
+                        nombre = await span.inner_text() if span else username_usuario
+
+                        comentadores_dict[url_limpia] = {
+                            "nombre_usuario": nombre,
+                            "username_usuario": username_usuario,
+                            "link_usuario": url_limpia,
+                            "foto_usuario": foto,
+                            "post_url": page.url
+                        }
+
+                    except Exception as e:
+                        logger.warning(f"Error procesando comentario: {e}")
+
+                posts_procesados += 1
+                print(f"📝 Post {posts_procesados}/{FACEBOOK_CONFIG['max_posts']} procesado")
+
+            except Exception as e:
+                logger.warning(f"Error procesando post: {e}")
+
+        print(f"✅ Comentadores extraídos: {len(comentadores_dict)}")
+        return list(comentadores_dict.values())
+
+    except Exception as e:
+        print(f"❌ Error extrayendo comentadores: {e}")
         return []
