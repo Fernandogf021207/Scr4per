@@ -42,9 +42,9 @@ def upsert_profile(cur, platform: str, username: str,
         VALUES (%s, %s, %s, %s, %s)
         ON CONFLICT (platform, username)
         DO UPDATE SET
-            full_name = COALESCE(EXCLUDED.full_name, profiles.full_name),
-            profile_url = COALESCE(EXCLUDED.profile_url, profiles.profile_url),
-            photo_url = COALESCE(EXCLUDED.photo_url, profiles.photo_url),
+            full_name  = COALESCE(NULLIF(EXCLUDED.full_name, ''),  profiles.full_name),
+            profile_url= COALESCE(NULLIF(EXCLUDED.profile_url, ''), profiles.profile_url),
+            photo_url  = COALESCE(NULLIF(EXCLUDED.photo_url, ''),  profiles.photo_url),
             updated_at = NOW()
         RETURNING id;
         """,

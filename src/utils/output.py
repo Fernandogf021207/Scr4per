@@ -96,24 +96,42 @@ def guardar_resultados(username, datos_usuario, seguidores, seguidos, comentador
 
                 with get_conn() as conn:
                     with conn.cursor() as cur:
-                        # Upsert main profile
+                        # Upsert main profile (with metadata)
                         upsert_profile(cur, platform, owner_username, owner_full_name, owner_url, owner_photo)
 
-                        # Followers
+                        # Pre-upsert followers with available metadata, then relationships
                         for u in seguidores or []:
                             try:
-                                if u.get('username_usuario'):
-                                    rel_id = add_relationship(cur, platform, owner_username, u['username_usuario'], 'follower')
+                                uname = u.get('username_usuario')
+                                if uname:
+                                    upsert_profile(
+                                        cur,
+                                        platform,
+                                        uname,
+                                        u.get('nombre_usuario'),
+                                        u.get('link_usuario'),
+                                        u.get('foto_usuario')
+                                    )
+                                    rel_id = add_relationship(cur, platform, owner_username, uname, 'follower')
                                     if rel_id is not None:
                                         followers_inserted += 1
                             except Exception as e:
                                 print(f"⚠️ Error insertando seguidor @{u.get('username_usuario')}: {e}")
 
-                        # Following
+                        # Pre-upsert following with available metadata, then relationships
                         for u in seguidos or []:
                             try:
-                                if u.get('username_usuario'):
-                                    rel_id = add_relationship(cur, platform, owner_username, u['username_usuario'], 'following')
+                                uname = u.get('username_usuario')
+                                if uname:
+                                    upsert_profile(
+                                        cur,
+                                        platform,
+                                        uname,
+                                        u.get('nombre_usuario'),
+                                        u.get('link_usuario'),
+                                        u.get('foto_usuario')
+                                    )
+                                    rel_id = add_relationship(cur, platform, owner_username, uname, 'following')
                                     if rel_id is not None:
                                         following_inserted += 1
                             except Exception as e:
@@ -131,12 +149,20 @@ def guardar_resultados(username, datos_usuario, seguidores, seguidos, comentador
                                 except Exception as e:
                                     print(f"⚠️ Error insertando post {post_url}: {e}")
 
-                            # Insert commenters per post
+                            # Upsert commenters with metadata, then add comments
                             for c in comentadores:
                                 try:
                                     post_url = c.get('post_url')
                                     commenter = c.get('username_usuario')
                                     if post_url and commenter:
+                                        upsert_profile(
+                                            cur,
+                                            platform,
+                                            commenter,
+                                            c.get('nombre_usuario'),
+                                            c.get('link_usuario'),
+                                            c.get('foto_usuario')
+                                        )
                                         cid = add_comment(cur, platform, post_url, commenter)
                                         if cid is not None:
                                             comments_inserted += 1
