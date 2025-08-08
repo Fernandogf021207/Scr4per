@@ -1,88 +1,54 @@
-import asyncio
-from src.utils.common import limpiar_url
-from src.utils.output import guardar_resultados
+import logging
 from src.scrapers.instagram.utils import (
     obtener_foto_perfil_instagram,
     obtener_nombre_usuario_instagram,
-    extraer_usuarios_instagram,
-    extraer_posts_del_perfil,
-    extraer_comentarios_post,
-    navegar_a_lista_instagram
+    procesar_usuarios_en_pagina
 )
+logger = logging.getLogger(__name__)
 
-async def scrap_usuarios_instagram(perfil_url, extraer_comentarios=True, max_posts=5):
+async def obtener_datos_usuario_principal(page, perfil_url):
+    print("Obteniendo datos del perfil principal de Instagram...")
+    await page.goto(perfil_url)
+    await page.wait_for_timeout(5000)
+    datos_usuario = await obtener_nombre_usuario_instagram(page)
+    foto = await obtener_foto_perfil_instagram(page)
+    datos_usuario['foto_perfil'] = foto
+    datos_usuario['url_usuario'] = perfil_url
+    print(f"Usuario detectado: @{datos_usuario['username']} ({datos_usuario['nombre_completo']})")
+    return datos_usuario
+
+async def scrap_lista_usuarios(page, perfil_url, tipo):
+    print(f"\n🔄 Navegando a {tipo}...")
     from src.scrapers.instagram.config import INSTAGRAM_CONFIG
-    from playwright.async_api import async_playwright
-    async with async_playwright() as p:
-        browser = await p.chromium.launch(headless=False)
-        context = await browser.new_context(storage_state=INSTAGRAM_CONFIG["storage_state_path"])
-        page = await context.new_page()
-
-        print(f"Navegando al perfil de Instagram: {perfil_url}")
+    try:
         await page.goto(perfil_url)
-        await page.wait_for_timeout(5000)
+        await page.wait_for_timeout(3000)
 
-        print("Obteniendo datos del perfil principal...")
-        
-        datos_usuario_ig = await obtener_nombre_usuario_instagram(page)
-        username = datos_usuario_ig['username']
-        nombre_completo = datos_usuario_ig['nombre_completo']
-        
-        foto_perfil = await obtener_foto_perfil_instagram(page)
-        
-        print(f"Usuario detectado: @{username} ({nombre_completo})")
-        
-        usuario_id = 1
-        datos_usuario = {
-            'id_usuario': [usuario_id],
-            'nombre_completo': [nombre_completo],  # Changed from nombre_usuario to nombre_completo
-            'username': [username],
-            'url_usuario': [perfil_url],
-            'url_foto_perfil': [foto_perfil if foto_perfil else ""]
-        }
-
-        print("\n🔄 Extrayendo seguidores...")
-        seguidores = []
-        if await navegar_a_lista_instagram(page, perfil_url, "followers"):
-            seguidores = await extraer_usuarios_instagram(page, "seguidores", username)
-            print(f"📊 Seguidores encontrados: {len(seguidores)}")
+        if tipo == "seguidores":
+            boton = await page.query_selector('a[href$="/followers/"]')
+        elif tipo == "seguidos":
+            boton = await page.query_selector('a[href$="/following/"]')
         else:
-            print("❌ No se pudieron extraer seguidores")
+            print("❌ Tipo de lista inválido")
+            return []
 
-        print("\n🔄 Extrayendo seguidos...")
-        seguidos = []
-        if await navegar_a_lista_instagram(page, perfil_url, "following"):
-            seguidos = await extraer_usuarios_instagram(page, "seguidos", username)
-            print(f"📊 Seguidos encontrados: {len(seguidos)}")
-        else:
-            print("❌ No se pudieron extraer seguidos")
+        if not boton:
+            print(f"❌ No se encontró el botón de {tipo}")
+            return []
 
-        comentarios = []
-        if extraer_comentarios:
-            print(f"\n💬 Extrayendo comentarios de los últimos {max_posts} posts...")
-            
-            await page.goto(perfil_url)
-            await page.wait_for_timeout(3000)
-            
-            urls_posts = await extraer_posts_del_perfil(page, max_posts)
-            
-            for i, url_post in enumerate(urls_posts, 1):
-                comentarios_post = await extraer_comentarios_post(page, url_post, i)
-                comentarios.extend(comentarios_post)
-                await asyncio.sleep(2)
-            
-            print(f"📊 Total de comentarios únicos encontrados: {len(comentarios)}")
+        await boton.click()
+        await page.wait_for_timeout(3000)
 
-        if len(seguidores) == 0 and len(seguidos) == 0 and len(comentarios) == 0:
-            print("⚠️ No se encontraron datos. Posibles causas:")
-            print("  - El perfil es privado")
-            print("  - No hay sesión iniciada")
-            print("  - Instagram cambió su estructura")
-            print("  - Necesitas seguir al usuario para ver estas listas")
-            await browser.close()
-            return None
-        
-        archivo_creado = guardar_resultados(username, datos_usuario, seguidores, seguidos, comentarios, platform="instagram")
-        
-        await browser.close()
-        return archivo_creado
+        usuarios_dict = {}
+        scroll_attempts = 0
+        while scroll_attempts < INSTAGRAM_CONFIG['max_scroll_attempts']:
+            count = await procesar_usuarios_en_pagina(page, usuarios_dict)
+            await page.evaluate("document.querySelector('div[role=\"dialog\"] ul').parentNode.scrollTop = document.querySelector('div[role=\"dialog\"] ul').parentNode.scrollHeight")
+            await page.wait_for_timeout(INSTAGRAM_CONFIG['scroll_pause_ms'])
+            scroll_attempts += 1
+        print(f"✅ {tipo.capitalize()} extraídos: {len(usuarios_dict)}")
+        return list(usuarios_dict.values())
+
+    except Exception as e:
+        print(f"❌ Error extrayendo {tipo}: {e}")
+        return []
