@@ -9,9 +9,9 @@ from src.scrapers.x.scraper import (
     obtener_datos_usuario_principal,
     scrap_seguidores,
     scrap_seguidos,
-    scrap_comentadores,
-    guardar_resultados
+    scrap_comentadores
 )
+from src.utils.output import guardar_resultados
 
 logger = setup_logging()
 

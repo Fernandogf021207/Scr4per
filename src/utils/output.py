@@ -51,6 +51,8 @@ def guardar_resultados(username, datos_usuario, seguidores, seguidos, comentador
     base = f"{platform}_scraper_{username}"
     archivo_excel = f"data/output/{base}.xlsx"
 
+    # Write to Excel/CSV and capture output result without early return
+    output_result = None
     try:
         with pd.ExcelWriter(archivo_excel, engine='openpyxl') as writer:
             datos_usuario_df.to_excel(writer, sheet_name="Usuario", index=False)
@@ -61,7 +63,7 @@ def guardar_resultados(username, datos_usuario, seguidores, seguidos, comentador
             if not df_comentadores.empty:
                 df_comentadores.to_excel(writer, sheet_name="Comentadores", index=False)
         print(f"\n✅ Archivo Excel creado: {archivo_excel}")
-        return archivo_excel
+        output_result = archivo_excel
     except ImportError:
         print("\n⚠️ No se pudo guardar como Excel. Usando CSV...")
         datos_usuario_df.to_csv(f"data/output/{base}_usuario.csv", index=False)
@@ -71,4 +73,82 @@ def guardar_resultados(username, datos_usuario, seguidores, seguidos, comentador
             df_seguidos.to_csv(f"data/output/{base}_seguidos.csv", index=False)
         if not df_comentadores.empty:
             df_comentadores.to_csv(f"data/output/{base}_comentadores.csv", index=False)
-        return base
+        output_result = base
+
+    # Optional DB insertion controlled by env var SAVE_TO_DB
+    save_to_db = str(os.getenv('SAVE_TO_DB', '0')).lower() in ('1', 'true', 'yes')
+    if save_to_db:
+        try:
+            from db.insert import get_conn, upsert_profile, add_relationship, add_post, add_comment
+        except Exception as e:
+            print(f"\n⚠️ No se pudo cargar helpers de DB (db/insert.py). Omitiendo inserción. Detalle: {e}")
+        else:
+            try:
+                owner_username = datos_usuario.get('username')
+                owner_full_name = datos_usuario.get('nombre_completo')
+                owner_url = datos_usuario.get('url_usuario')
+                owner_photo = datos_usuario.get('foto_perfil')
+
+                followers_inserted = 0
+                following_inserted = 0
+                posts_inserted = 0
+                comments_inserted = 0
+
+                with get_conn() as conn:
+                    with conn.cursor() as cur:
+                        # Upsert main profile
+                        upsert_profile(cur, platform, owner_username, owner_full_name, owner_url, owner_photo)
+
+                        # Followers
+                        for u in seguidores or []:
+                            try:
+                                if u.get('username_usuario'):
+                                    rel_id = add_relationship(cur, platform, owner_username, u['username_usuario'], 'follower')
+                                    if rel_id is not None:
+                                        followers_inserted += 1
+                            except Exception as e:
+                                print(f"⚠️ Error insertando seguidor @{u.get('username_usuario')}: {e}")
+
+                        # Following
+                        for u in seguidos or []:
+                            try:
+                                if u.get('username_usuario'):
+                                    rel_id = add_relationship(cur, platform, owner_username, u['username_usuario'], 'following')
+                                    if rel_id is not None:
+                                        following_inserted += 1
+                            except Exception as e:
+                                print(f"⚠️ Error insertando seguido @{u.get('username_usuario')}: {e}")
+
+                        # Comments (ensure posts exist first)
+                        if comentadores:
+                            # Create posts (unique by URL)
+                            urls = {c.get('post_url') for c in comentadores if c.get('post_url')}
+                            for post_url in urls:
+                                try:
+                                    post_id = add_post(cur, platform, owner_username, post_url)
+                                    if post_id is not None:
+                                        posts_inserted += 1
+                                except Exception as e:
+                                    print(f"⚠️ Error insertando post {post_url}: {e}")
+
+                            # Insert commenters per post
+                            for c in comentadores:
+                                try:
+                                    post_url = c.get('post_url')
+                                    commenter = c.get('username_usuario')
+                                    if post_url and commenter:
+                                        cid = add_comment(cur, platform, post_url, commenter)
+                                        if cid is not None:
+                                            comments_inserted += 1
+                                except Exception as e:
+                                    print(f"⚠️ Error insertando comentario de @{c.get('username_usuario')} en {c.get('post_url')}: {e}")
+
+                print(f"\n✅ Inserción en DB completada ({platform}):")
+                print(f"   - Seguidores nuevos: {followers_inserted}")
+                print(f"   - Seguidos nuevos: {following_inserted}")
+                print(f"   - Posts nuevos: {posts_inserted}")
+                print(f"   - Comentarios nuevos: {comments_inserted}")
+            except Exception as e:
+                print(f"\n❌ Error general insertando en DB: {e}")
+
+    return output_result
