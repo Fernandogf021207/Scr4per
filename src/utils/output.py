@@ -124,6 +124,7 @@ def guardar_resultados(username, datos_usuario, seguidores, seguidos, comentador
                 print(f"\n❌ Error enviando a la API: {e}")
 
     # Optional DB insertion controlled by env var SAVE_TO_DB (fallback if not using API)
+
     save_to_db = (not save_to_api) and (str(os.getenv('SAVE_TO_DB', '0')).lower() in ('1', 'true', 'yes'))
     if save_to_db:
         try:
@@ -142,8 +143,15 @@ def guardar_resultados(username, datos_usuario, seguidores, seguidos, comentador
                 posts_inserted = 0
                 comments_inserted = 0
 
+                # Mapear plataforma → esquema
+                schema_map = {'x': 'red_x', 'instagram': 'red_instagram', 'facebook': 'red_facebook'}
+                target_schema = schema_map.get(platform, 'public')
+
                 with get_conn() as conn:
                     with conn.cursor() as cur:
+                        # Fijar el esquema objetivo para esta transacción
+                        cur.execute(f"SET LOCAL search_path TO {target_schema}, public;")
+
                         # Upsert main profile (with metadata)
                         upsert_profile(cur, platform, owner_username, owner_full_name, owner_url, owner_photo)
 
@@ -187,7 +195,6 @@ def guardar_resultados(username, datos_usuario, seguidores, seguidos, comentador
 
                         # Comments (ensure posts exist first)
                         if comentadores:
-                            # Create posts (unique by URL)
                             urls = {c.get('post_url') for c in comentadores if c.get('post_url')}
                             for post_url in urls:
                                 try:
@@ -197,7 +204,6 @@ def guardar_resultados(username, datos_usuario, seguidores, seguidos, comentador
                                 except Exception as e:
                                     print(f"⚠️ Error insertando post {post_url}: {e}")
 
-                            # Upsert commenters with metadata, then add comments
                             for c in comentadores:
                                 try:
                                     post_url = c.get('post_url')
@@ -224,5 +230,6 @@ def guardar_resultados(username, datos_usuario, seguidores, seguidos, comentador
                 print(f"   - Comentarios nuevos: {comments_inserted}")
             except Exception as e:
                 print(f"\n❌ Error general insertando en DB: {e}")
+
 
     return output_result
