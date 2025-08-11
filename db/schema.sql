@@ -183,3 +183,39 @@ CREATE TABLE IF NOT EXISTS red_facebook.comments (
 CREATE INDEX IF NOT EXISTS idx_fb_profiles_platform_username ON red_facebook.profiles(platform, username);
 CREATE INDEX IF NOT EXISTS idx_fb_relationships_owner_type ON red_facebook.relationships(owner_profile_id, rel_type);
 CREATE INDEX IF NOT EXISTS idx_fb_posts_owner ON red_facebook.posts(owner_profile_id);
+
+-- ======================== UNIFIED VIEWS (public) ========================
+-- Profiles across all networks
+CREATE OR REPLACE VIEW public.v_profiles AS
+SELECT 'red_x'::text AS source_schema, id, platform, username, full_name, profile_url, photo_url, created_at, updated_at FROM red_x.profiles
+UNION ALL
+SELECT 'red_instagram'::text, id, platform, username, full_name, profile_url, photo_url, created_at, updated_at FROM red_instagram.profiles
+UNION ALL
+SELECT 'red_facebook'::text, id, platform, username, full_name, profile_url, photo_url, created_at, updated_at FROM red_facebook.profiles;
+
+-- Relationships across all networks
+CREATE OR REPLACE VIEW public.v_relationships AS
+SELECT 'red_x'::text AS source_schema, id, platform, owner_profile_id, related_profile_id, rel_type, collected_at FROM red_x.relationships
+UNION ALL
+SELECT 'red_instagram'::text, id, platform, owner_profile_id, related_profile_id, rel_type, collected_at FROM red_instagram.relationships
+UNION ALL
+SELECT 'red_facebook'::text, id, platform, owner_profile_id, related_profile_id, rel_type, collected_at FROM red_facebook.relationships;
+
+-- Posts across all networks
+CREATE OR REPLACE VIEW public.v_posts AS
+SELECT 'red_x'::text AS source_schema, id, platform, owner_profile_id, post_url, created_at FROM red_x.posts
+UNION ALL
+SELECT 'red_instagram'::text, id, platform, owner_profile_id, post_url, created_at FROM red_instagram.posts
+UNION ALL
+SELECT 'red_facebook'::text, id, platform, owner_profile_id, post_url, created_at FROM red_facebook.posts;
+
+-- Comments across all networks (platform via join with posts)
+CREATE OR REPLACE VIEW public.v_comments AS
+SELECT 'red_x'::text AS source_schema, c.id, p.platform, c.post_id, c.commenter_profile_id, c.first_seen_at
+FROM red_x.comments c JOIN red_x.posts p ON p.id = c.post_id
+UNION ALL
+SELECT 'red_instagram'::text, c.id, p.platform, c.post_id, c.commenter_profile_id, c.first_seen_at
+FROM red_instagram.comments c JOIN red_instagram.posts p ON p.id = c.post_id
+UNION ALL
+SELECT 'red_facebook'::text, c.id, p.platform, c.post_id, c.commenter_profile_id, c.first_seen_at
+FROM red_facebook.comments c JOIN red_facebook.posts p ON p.id = c.post_id;

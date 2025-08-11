@@ -75,8 +75,56 @@ def guardar_resultados(username, datos_usuario, seguidores, seguidos, comentador
             df_comentadores.to_csv(f"data/output/{base}_comentadores.csv", index=False)
         output_result = base
 
-    # Optional DB insertion controlled by env var SAVE_TO_DB
-    save_to_db = str(os.getenv('SAVE_TO_DB', '0')).lower() in ('1', 'true', 'yes')
+    # Alternate API insertion mode
+    save_to_api = str(os.getenv('SAVE_TO_API', '0')).lower() in ('1', 'true', 'yes')
+    if save_to_api:
+        try:
+            from scripts.api_client import create_or_update_profile, create_relationship, create_post, create_comment
+        except Exception as e:
+            print(f"\n⚠️ No se pudo cargar api_client. Omitiendo envío a API. Detalle: {e}")
+        else:
+            try:
+                # Owner profile
+                owner_username = datos_usuario.get('username')
+                owner_full_name = datos_usuario.get('nombre_completo')
+                owner_url = datos_usuario.get('url_usuario')
+                owner_photo = datos_usuario.get('foto_perfil')
+                create_or_update_profile(platform, owner_username, owner_full_name, owner_url, owner_photo)
+
+                # Followers
+                for u in seguidores or []:
+                    uname = u.get('username_usuario')
+                    if not uname:
+                        continue
+                    # Upsert related profile with metadata first
+                    create_or_update_profile(platform, uname, u.get('nombre_usuario'), u.get('link_usuario'), u.get('foto_usuario'))
+                    create_relationship(platform, owner_username, uname, 'follower')
+
+                # Following
+                for u in seguidos or []:
+                    uname = u.get('username_usuario')
+                    if not uname:
+                        continue
+                    create_or_update_profile(platform, uname, u.get('nombre_usuario'), u.get('link_usuario'), u.get('foto_usuario'))
+                    create_relationship(platform, owner_username, uname, 'following')
+
+                # Comments
+                if comentadores:
+                    urls = {c.get('post_url') for c in comentadores if c.get('post_url')}
+                    for post_url in urls:
+                        create_post(platform, owner_username, post_url)
+                    for c in comentadores:
+                        post_url = c.get('post_url')
+                        commenter = c.get('username_usuario')
+                        if post_url and commenter:
+                            create_or_update_profile(platform, commenter, c.get('nombre_usuario'), c.get('link_usuario'), c.get('foto_usuario'))
+                            create_comment(platform, post_url, commenter)
+                print("\n✅ Envío a API completado")
+            except Exception as e:
+                print(f"\n❌ Error enviando a la API: {e}")
+
+    # Optional DB insertion controlled by env var SAVE_TO_DB (fallback if not using API)
+    save_to_db = (not save_to_api) and (str(os.getenv('SAVE_TO_DB', '0')).lower() in ('1', 'true', 'yes'))
     if save_to_db:
         try:
             from db.insert import get_conn, upsert_profile, add_relationship, add_post, add_comment
