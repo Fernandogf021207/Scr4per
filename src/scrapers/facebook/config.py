@@ -41,16 +41,28 @@ FACEBOOK_CONFIG = {
         'div[role="article"] div:has(a[href^="/"])'
     ],
     "comment_container_selectors": [
-        # Selector específico del contenedor de comentarios proporcionado
-        'div.x9f619.x1n2onr6.x1ja2u2z.x78zum5.xdt5ytf.x2lah0s.x193iq5w.xeuugli.x1icxu4v.x25sj25.x10b6aqq.x1yrsyyn',
-        # Selector del botón de comentarios clickeable
-        'div[role="button"][tabindex="0"] span[class*="html-span"] div.x1i10hfl',
-        # Selectores alternativos para botones de comentarios
+        # Selectores generalistas para botones de comentarios
+        'div[role="button"]:has-text("comentario")',
+        'div[role="button"]:has-text("comment")',
+        'div[role="button"] i[style*="7H32i_pdCAf.png"]',
+        'div[role="button"] i[data-visualcompletion="css-img"]',
         'div[aria-label*="comentario" i]',
-        'div[role="button"]:has(i[style*="7H32i_pdCAf.png"])',
-        'div[role="button"]:has(span:contains("0"), span:contains("1"), span:contains("2"), span:contains("3"), span:contains("4"), span:contains("5"))',
-        # Selector más general para contadores de comentarios
-        'span:has(span[class*="html-span"]) div[role="button"]'
+        'div[aria-label*="comment" i]',
+        'div[role="button"][tabindex="0"]:has(span)',
+    ],
+    "modal_selectors": [
+        'div[role="dialog"]',
+        'div[aria-modal="true"]',
+        'div[data-pagelet*="comment"]',
+        'div[class*="modal"]',
+        'div[style*="position: fixed"]',
+    ],
+    "modal_comment_selectors": [
+        'div[role="dialog"] div[aria-label="Comentario"]',
+        'div[aria-modal="true"] div[aria-label="Comentario"]',
+        'div[role="dialog"] div:has(a[href^="/"])',
+        'div[aria-modal="true"] div:has(a[href^="/"])',
+        'div:has(a[href^="/"]):has(img[src*="scontent"])',
     ],
     "patterns_to_exclude": [
         "/followers", "/following", "/friends", "/videos", "/photo", "/photos",

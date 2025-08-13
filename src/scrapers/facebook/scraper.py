@@ -9,6 +9,374 @@ from src.scrapers.facebook.utils import (
 from src.utils.common import limpiar_url
 logger = logging.getLogger(__name__)
 
+async def find_comment_button(post):
+    """Encuentra el botón de comentarios de manera generalista usando múltiples estrategias"""
+    try:
+        # Estrategia 1: Buscar usando JavaScript para evaluar contenido (más confiable)
+        comment_button = await post.evaluate("""
+            (post) => {
+                // Buscar todos los botones en el post
+                const buttons = post.querySelectorAll('div[role="button"], span[role="button"]');
+                
+                for (const button of buttons) {
+                    const text = button.textContent.toLowerCase();
+                    
+                    // Buscar icono de comentarios específico
+                    const hasCommentIcon = button.querySelector('i[style*="7H32i_pdCAf.png"]') ||
+                                         button.querySelector('i[data-visualcompletion="css-img"]') ||
+                                         button.querySelector('svg[aria-label*="comment" i]');
+                    
+                    // Buscar texto relacionado con comentarios
+                    const hasCommentText = text.includes('comment') || 
+                                          text.includes('comentario') ||
+                                          text.includes('commenti') ||
+                                          text.includes('comentários');
+                    
+                    // Buscar números que podrían indicar contador de comentarios
+                    const hasNumberPattern = /^\\s*\\d+\\s*(comment|comentario|commenti)?/i.test(text);
+                    
+                    // Verificar si está en la zona de acciones del post (parte inferior)
+                    const rect = button.getBoundingClientRect();
+                    const postRect = post.getBoundingClientRect();
+                    const isInActionArea = rect.top > (postRect.top + postRect.height * 0.7);
+                    
+                    // Buscar estructura típica de botón de comentarios
+                    const hasTypicalStructure = button.querySelector('span') && 
+                                               (button.querySelector('i') || button.querySelector('svg'));
+                    
+                    // Si cumple alguna de las condiciones y está en área de acciones
+                    if ((hasCommentIcon || hasCommentText || hasNumberPattern || hasTypicalStructure) && isInActionArea) {
+                        return button;
+                    }
+                }
+                
+                // Fallback: buscar botones que solo contengan números pequeños en área de acciones
+                for (const button of buttons) {
+                    const text = button.textContent.trim();
+                    const rect = button.getBoundingClientRect();
+                    const postRect = post.getBoundingClientRect();
+                    const isInActionArea = rect.top > (postRect.top + postRect.height * 0.7);
+                    
+                    if (/^\\d{1,3}$/.test(text) && isInActionArea) {
+                        return button;
+                    }
+                }
+                
+                return null;
+            }
+        """)
+        
+        if comment_button:
+            print(f"  ✓ Botón de comentarios encontrado por análisis JavaScript")
+            return comment_button
+        
+        # Estrategia 2: Buscar por iconos de comentarios usando selectores CSS
+        icon_selectors = [
+            'div[role="button"] i[style*="7H32i_pdCAf.png"]',
+            'div[role="button"] i[data-visualcompletion="css-img"]',
+            'div[role="button"]:has(i[style*="background-image"])',
+            'span[role="button"] i[style*="7H32i_pdCAf.png"]',
+        ]
+        
+        for selector in icon_selectors:
+            try:
+                button = await post.query_selector(selector)
+                if button:
+                    # Verificar que el botón esté en la parte inferior del post
+                    is_in_action_area = await button.evaluate("""
+                        (btn) => {
+                            const btnRect = btn.getBoundingClientRect();
+                            const post = btn.closest('div[role="article"]');
+                            if (!post) return true; // Si no encuentra el post, asumir que está bien
+                            const postRect = post.getBoundingClientRect();
+                            return btnRect.top > (postRect.top + postRect.height * 0.7);
+                        }
+                    """)
+                    
+                    if is_in_action_area:
+                        print(f"  ✓ Botón de comentarios encontrado por icono: {selector}")
+                        return button
+            except:
+                continue
+        
+        # Estrategia 3: Buscar botones en la zona de acciones que contengan números
+        action_area_buttons = await post.query_selector_all('div[role="button"], span[role="button"]')
+        
+        for button in action_area_buttons:
+            try:
+                # Verificar posición
+                is_in_action_area = await button.evaluate("""
+                    (btn) => {
+                        const btnRect = btn.getBoundingClientRect();
+                        const post = btn.closest('div[role="article"]');
+                        if (!post) return false;
+                        const postRect = post.getBoundingClientRect();
+                        return btnRect.top > (postRect.top + postRect.height * 0.7);
+                    }
+                """)
+                
+                if not is_in_action_area:
+                    continue
+                
+                # Verificar contenido
+                text_content = await button.inner_text()
+                text = text_content.strip().lower()
+                
+                # Si contiene solo números o números + texto de comentarios
+                if (text.isdigit() and len(text) <= 3) or \
+                   any(word in text for word in ['comment', 'comentario', 'commenti']):
+                    print(f"  ✓ Botón de comentarios encontrado por contenido: '{text_content}'")
+                    return button
+                    
+            except:
+                continue
+        
+        print(f"  ⚠️ No se encontró botón de comentarios en el post")
+        return None
+        
+    except Exception as e:
+        logger.warning(f"Error buscando botón de comentarios: {e}")
+        return None
+
+async def wait_for_modal(page):
+    """Espera a que aparezca el modal de comentarios"""
+    try:
+        # Selectores típicos para modales de Facebook
+        modal_selectors = [
+            'div[role="dialog"]',
+            'div[aria-modal="true"]', 
+            'div[data-pagelet*="comment"]',
+            'div[class*="modal"]',
+            'div[style*="position: fixed"]',
+        ]
+        
+        for selector in modal_selectors:
+            try:
+                # Esperar hasta 5 segundos por el modal
+                await page.wait_for_selector(selector, timeout=5000)
+                modal = await page.query_selector(selector)
+                if modal:
+                    print(f"  ✓ Modal encontrado con selector: {selector}")
+                    return True
+            except:
+                continue
+        
+        # Si no se encuentra modal específico, verificar si la página cambió significativamente
+        # (puede ser que el modal no tenga atributos específicos)
+        await page.wait_for_timeout(2000)
+        
+        # Verificar si hay overlay o elementos que indiquen modal
+        overlay_exists = await page.evaluate("""
+            () => {
+                // Buscar elementos con z-index alto que podrían ser modales
+                const elements = document.querySelectorAll('div');
+                for (const el of elements) {
+                    const style = window.getComputedStyle(el);
+                    if (style.position === 'fixed' && 
+                        (parseInt(style.zIndex) > 100 || style.zIndex === 'auto')) {
+                        return true;
+                    }
+                }
+                return false;
+            }
+        """)
+        
+        if overlay_exists:
+            print(f"  ✓ Modal detectado por overlay")
+            return True
+        
+        print(f"  ⚠️ No se detectó modal de comentarios")
+        return False
+        
+    except Exception as e:
+        logger.warning(f"Error esperando modal: {e}")
+        return False
+
+async def extract_comments_from_modal(page, comentadores_dict):
+    """Extrae comentarios del modal abierto"""
+    try:
+        comentarios_extraidos = 0
+        
+        # Selectores para comentarios en modal
+        modal_comment_selectors = [
+            'div[role="dialog"] div[aria-label="Comentario"]',
+            'div[aria-modal="true"] div[aria-label="Comentario"]',
+            'div[role="dialog"] div:has(a[href^="/"])',
+            'div[aria-modal="true"] div:has(a[href^="/"])',
+            # Selectores más generales para el modal
+            'div:has(a[href^="/"]):has(img[src*="scontent"])',
+            'div[role="article"] div:has(a[href^="/"])',
+        ]
+        
+        comentarios = []
+        for selector in modal_comment_selectors:
+            try:
+                comentarios = await page.query_selector_all(selector)
+                if comentarios:
+                    print(f"  ✓ Encontrados {len(comentarios)} comentarios en modal con: {selector}")
+                    break
+            except:
+                continue
+        
+        if not comentarios:
+            # Intentar scroll en el modal para cargar más comentarios
+            print(f"  📜 Haciendo scroll en modal para cargar comentarios...")
+            await page.evaluate("""
+                () => {
+                    // Buscar el contenedor scrolleable del modal
+                    const modal = document.querySelector('div[role="dialog"], div[aria-modal="true"]');
+                    if (modal) {
+                        const scrollable = modal.querySelector('div[style*="overflow"]') || modal;
+                        scrollable.scrollBy(0, 300);
+                    }
+                }
+            """)
+            await page.wait_for_timeout(2000)
+            
+            # Reintentar buscar comentarios
+            for selector in modal_comment_selectors:
+                try:
+                    comentarios = await page.query_selector_all(selector)
+                    if comentarios:
+                        print(f"  ✓ Comentarios encontrados después del scroll: {len(comentarios)}")
+                        break
+                except:
+                    continue
+        
+        # Procesar comentarios encontrados
+        for comentario in comentarios:
+            try:
+                enlace_usuario = await comentario.query_selector('a[href^="/"]')
+                if not enlace_usuario:
+                    continue
+                    
+                href = await enlace_usuario.get_attribute("href")
+                if not href or '/photo' in href or '/video' in href or '/watch' in href:
+                    continue
+                    
+                username_usuario = href.strip('/').split('/')[-1]
+                if not username_usuario or len(username_usuario) < 2:
+                    continue
+                    
+                url_usuario = f"https://www.facebook.com{href}" if href.startswith('/') else href
+                url_limpia = limpiar_url(url_usuario)
+
+                if url_limpia in comentadores_dict:
+                    continue
+
+                # Buscar imagen de perfil
+                img_selectors = [
+                    'img[src*="scontent"]',
+                    'img[alt*="foto de perfil"]',
+                    'img[data-imgperflogname]'
+                ]
+                
+                foto = ""
+                for img_selector in img_selectors:
+                    try:
+                        img = await comentario.query_selector(img_selector)
+                        if img:
+                            foto = await img.get_attribute("src")
+                            break
+                    except:
+                        continue
+
+                # Buscar nombre del usuario
+                nombre_selectors = [
+                    'span[dir="auto"]',
+                    'strong',
+                    'a[href^="/"] span',
+                ]
+                
+                nombre = username_usuario
+                for nombre_selector in nombre_selectors:
+                    try:
+                        span = await comentario.query_selector(nombre_selector)
+                        if span:
+                            texto = await span.inner_text()
+                            if texto and len(texto.strip()) > 0 and len(texto.strip()) < 100:
+                                nombre = texto.strip()
+                                break
+                    except:
+                        continue
+
+                comentadores_dict[url_limpia] = {
+                    "nombre_usuario": nombre,
+                    "username_usuario": username_usuario,
+                    "link_usuario": url_limpia,
+                    "foto_usuario": foto or "",
+                    "post_url": page.url
+                }
+                
+                comentarios_extraidos += 1
+
+            except Exception as e:
+                logger.warning(f"Error procesando comentario en modal: {e}")
+                continue
+        
+        return comentarios_extraidos
+        
+    except Exception as e:
+        logger.warning(f"Error extrayendo comentarios del modal: {e}")
+        return 0
+
+async def close_modal(page):
+    """Cierra el modal de comentarios"""
+    try:
+        # Intentar cerrar con botón de cerrar
+        close_selectors = [
+            'div[role="dialog"] div[aria-label="Cerrar"]',
+            'div[role="dialog"] div[aria-label="Close"]',
+            'div[aria-modal="true"] button[aria-label="Cerrar"]',
+            'div[aria-modal="true"] button[aria-label="Close"]',
+            'div[role="dialog"] svg[aria-label="Cerrar"]',
+            'div[role="dialog"] svg[aria-label="Close"]',
+        ]
+        
+        for selector in close_selectors:
+            try:
+                close_button = await page.query_selector(selector)
+                if close_button:
+                    await close_button.click()
+                    await page.wait_for_timeout(1000)
+                    print(f"  ✓ Modal cerrado con botón")
+                    return True
+            except:
+                continue
+        
+        # Si no hay botón, intentar con ESC
+        try:
+            await page.keyboard.press('Escape')
+            await page.wait_for_timeout(1000)
+            print(f"  ✓ Modal cerrado con ESC")
+            return True
+        except:
+            pass
+        
+        # Como último recurso, hacer clic fuera del modal
+        try:
+            await page.evaluate("""
+                () => {
+                    // Buscar el overlay/backdrop y hacer clic
+                    const modal = document.querySelector('div[role="dialog"], div[aria-modal="true"]');
+                    if (modal && modal.parentElement) {
+                        modal.parentElement.click();
+                    }
+                }
+            """)
+            await page.wait_for_timeout(1000)
+            print(f"  ✓ Modal cerrado haciendo clic fuera")
+            return True
+        except:
+            pass
+        
+        print(f"  ⚠️ No se pudo cerrar el modal automáticamente")
+        return False
+        
+    except Exception as e:
+        logger.warning(f"Error cerrando modal: {e}")
+        return False
+
 async def obtener_datos_usuario_principal(page, perfil_url):
     print("Obteniendo datos del perfil principal de Facebook...")
     await page.goto(perfil_url)
@@ -332,96 +700,34 @@ async def scrap_comentadores_facebook(page, perfil_url):
                             await page.evaluate("window.scrollBy(0, 300)")
                             await page.wait_for_timeout(1000)
                         
-                        # Buscar el contenedor de comentarios específico que proporcionaste
-                        comment_container_selectors = [
-                            # Selector específico del contenedor de comentarios
-                            'div.x9f619.x1n2onr6.x1ja2u2z.x78zum5.xdt5ytf.x2lah0s.x193iq5w.xeuugli.x1icxu4v.x25sj25.x10b6aqq.x1yrsyyn',
-                            # Selector del botón de comentarios
-                            'div[role="button"][tabindex="0"] span[class*="html-span"] div.x1i10hfl',
-                            # Selectores alternativos
-                            'div[aria-label*="comentario" i]',
-                            'div[role="button"]:has(i[style*="7H32i_pdCAf.png"])',
-                            'span:has(span:contains("0"), span:contains("1"), span:contains("2"), span:contains("3"), span:contains("4"), span:contains("5"), span:contains("6"), span:contains("7"), span:contains("8"), span:contains("9"))'
-                        ]
+                        # Buscar el botón de comentarios con estrategia generalista
+                        comment_button = await find_comment_button(post)
                         
-                        comment_container = None
-                        for selector in comment_container_selectors:
+                        if comment_button:
                             try:
-                                comment_container = await post.query_selector(selector)
-                                if comment_container:
-                                    print(f"  ✓ Contenedor de comentarios encontrado con: {selector}")
-                                    break
-                            except Exception as e:
-                                continue
-                        
-                        if comment_container:
-                            try:
-                                # Hacer clic en el contenedor de comentarios para expandirlos
-                                print(f"  🖱️ Haciendo clic en contenedor de comentarios...")
-                                await comment_container.click()
+                                # Hacer clic en el botón de comentarios para abrir el modal
+                                print(f"  🖱️ Haciendo clic en botón de comentarios...")
+                                await comment_button.click()
                                 await page.wait_for_timeout(3000)
                                 
-                                # Esperar a que se carguen los comentarios
-                                await page.wait_for_timeout(2000)
+                                # Esperar a que aparezca el modal
+                                modal_found = await wait_for_modal(page)
+                                
+                                if modal_found:
+                                    print(f"  ✓ Modal de comentarios abierto")
+                                    # Extraer comentarios del modal
+                                    comentarios_extraidos = await extract_comments_from_modal(page, comentadores_dict)
+                                    print(f"  📊 Comentarios extraídos del modal: {comentarios_extraidos}")
+                                    
+                                    # Cerrar el modal
+                                    await close_modal(page)
+                                else:
+                                    print(f"  ⚠️ No se pudo abrir el modal de comentarios")
                                 
                             except Exception as click_error:
-                                print(f"  ⚠️ Error haciendo clic en comentarios: {click_error}")
-                        
-                        # Buscar comentarios después de expandir
-                        comentarios_selectors = [
-                            'div[aria-label="Comentario"]',
-                            'div[data-ad-preview="message"]', 
-                            'div[role="article"] div:has(a[href^="/"])',
-                            'div:has(a[href^="/"]):has(img[src*="scontent"])',  # Comentarios con foto de perfil
-                            'div[class*="comment"]'  # Selector más general
-                        ]
-                        
-                        comentarios = []
-                        for selector in comentarios_selectors:
-                            comentarios = await post.query_selector_all(selector)
-                            if comentarios:
-                                print(f"  ✓ Encontrados {len(comentarios)} comentarios con: {selector}")
-                                break
-                        
-                        if not comentarios:
-                            print(f"  ℹ️ No se encontraron comentarios en el post {post_index + 1}")
-                        
-                        # Procesar comentarios encontrados
-                        for comentario in comentarios:
-                            try:
-                                enlace_usuario = await comentario.query_selector('a[href^="/"]')
-                                if not enlace_usuario:
-                                    continue
-                                    
-                                href = await enlace_usuario.get_attribute("href")
-                                if not href or '/photo' in href or '/video' in href:
-                                    continue
-                                    
-                                username_usuario = href.strip('/').split('/')[-1]
-                                url_usuario = f"https://www.facebook.com{href}" if href.startswith('/') else href
-                                url_limpia = limpiar_url(url_usuario)
-
-                                if url_limpia in comentadores_dict:
-                                    continue
-
-                                # Buscar imagen de perfil
-                                img = await comentario.query_selector('img[src*="scontent"]')
-                                foto = await img.get_attribute("src") if img else ""
-
-                                # Buscar nombre
-                                span = await comentario.query_selector('span')
-                                nombre = await span.inner_text() if span else username_usuario
-
-                                comentadores_dict[url_limpia] = {
-                                    "nombre_usuario": nombre,
-                                    "username_usuario": username_usuario,
-                                    "link_usuario": url_limpia,
-                                    "foto_usuario": foto,
-                                    "post_url": page.url
-                                }
-
-                            except Exception as e:
-                                logger.warning(f"Error procesando comentario: {e}")
+                                print(f"  ⚠️ Error procesando comentarios: {click_error}")
+                        else:
+                            print(f"  ℹ️ No se encontró botón de comentarios en el post {post_index + 1}")
 
                         posts_procesados += 1
                         print(f"  � Post {posts_procesados}/{FACEBOOK_CONFIG['max_posts']} procesado. Comentadores totales: {len(comentadores_dict)}")
