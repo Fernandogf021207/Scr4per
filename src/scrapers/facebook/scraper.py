@@ -247,6 +247,154 @@ async def extract_comments_from_modal(page, comentadores_dict):
         logger.warning(f"Error extrayendo comentarios del modal: {e}")
         return 0
 
+async def goto_photos_tab(page, perfil_url: str) -> bool:
+    """Ir a la pestaña de fotos del usuario probando varias rutas conocidas."""
+    try:
+        photos_urls = [
+            urljoin(perfil_url, "photos"),
+            urljoin(perfil_url, "photos_by"),
+            f"{perfil_url.rstrip('/')}/photos",
+            f"{perfil_url.rstrip('/')}/photos_by",
+        ]
+        for u in photos_urls:
+            try:
+                await page.goto(u)
+                await page.wait_for_timeout(3000)
+                # Heurística: existan anchors con imagen dentro del main
+                thumbs = await page.query_selector_all(
+                    'div[role="main"] a[role="link"]:has(img), a[href*="/photo.php"], a[href*="/photos/"]'
+                )
+                if thumbs:
+                    return True
+            except Exception:
+                continue
+        return False
+    except Exception:
+        return False
+
+async def find_photo_thumbnails(page):
+    """Devuelve elementos candidato a miniaturas de foto en la pestaña de fotos."""
+    selectors = [
+        'div[role="main"] a[role="link"]:has(img)',
+        'a[href*="/photo.php"]',
+        'a[href*="/photos/"]',
+    ]
+    for sel in selectors:
+        try:
+            els = await page.query_selector_all(sel)
+            if els:
+                return els
+        except Exception:
+            continue
+    return []
+
+async def open_photo_modal_by_index(page, index: int) -> bool:
+    """Abre el modal de la foto clickeando la miniatura por índice."""
+    try:
+        thumbs = await find_photo_thumbnails(page)
+        if index >= len(thumbs):
+            return False
+        thumb = thumbs[index]
+        try:
+            await thumb.scroll_into_view_if_needed()
+        except Exception:
+            pass
+        try:
+            await thumb.click()
+        except Exception:
+            # Fallback: intentar click en imagen hija
+            img = await thumb.query_selector('img')
+            if img:
+                await img.click()
+            else:
+                return False
+        await page.wait_for_timeout(1500)
+        return await wait_for_modal(page)
+    except Exception:
+        return False
+
+async def close_any_modal(page):
+    try:
+        await close_modal(page)
+    except Exception:
+        pass
+
+async def extract_comments_in_current_photo_modal(page, comentadores_dict) -> int:
+    """Extrae comentadores del modal de una foto ya abierto."""
+    try:
+        count_before = len(comentadores_dict)
+        extraidos = await extract_comments_from_modal(page, comentadores_dict)
+        if extraidos == 0:
+            # Scroll suave dentro del modal y reintentar una vez
+            try:
+                await page.evaluate("""
+                    () => {
+                        const modal = document.querySelector('div[role="dialog"], div[aria-modal="true"]')
+                        if (modal) {
+                            const scrollable = modal.querySelector('div[style*="overflow"], div[style*="height"], div[style*="max-height"]') || modal;
+                            scrollable.scrollTop += 600;
+                        }
+                    }
+                """)
+                await page.wait_for_timeout(1200)
+                extraidos = await extract_comments_from_modal(page, comentadores_dict)
+            except Exception:
+                pass
+        return len(comentadores_dict) - count_before
+    except Exception:
+        return 0
+
+async def find_likes_button_in_modal(page):
+    """Busca el contador/botón de reacciones dentro del modal de foto."""
+    try:
+        from src.scrapers.facebook.config import FACEBOOK_CONFIG
+        modal = await page.query_selector('div[role="dialog"], div[aria-modal="true"]')
+        if not modal:
+            return None
+        # Preferir selectores configurados
+        for sel in FACEBOOK_CONFIG.get('likes_button_selectors', []):
+            try:
+                el = await modal.query_selector(sel)
+                if el:
+                    return el
+            except Exception:
+                continue
+        # Fallback: spans con números y un icono cerca
+        spans = await modal.query_selector_all('span')
+        for sp in spans:
+            try:
+                txt = (await sp.inner_text() or '').strip().lower()
+                if not txt or not any(ch.isdigit() for ch in txt):
+                    continue
+                icon_near = await sp.evaluate("el => !!(el.closest('div')?.querySelector('i[data-visualcompletion=\"css-img\"], svg'))")
+                if icon_near:
+                    return sp
+            except Exception:
+                continue
+        return None
+    except Exception:
+        return None
+
+async def open_reactions_list_from_modal(page) -> bool:
+    """Desde el modal de foto, abre la lista de reacciones si existe."""
+    btn = await find_likes_button_in_modal(page)
+    if not btn:
+        return False
+    try:
+        try:
+            await btn.scroll_into_view_if_needed()
+        except Exception:
+            pass
+        try:
+            await btn.click()
+        except Exception:
+            # Fallback JS
+            await page.evaluate("(el)=>el.click()", btn)
+        await page.wait_for_timeout(1200)
+        return await wait_for_modal(page)
+    except Exception:
+        return False
+
 async def close_modal(page):
     """Cierra el modal de comentarios"""
     try:
@@ -362,12 +510,12 @@ async def extract_likes_from_modal(page, likers_dict):
         encontrados = 0
 
         # Hacer múltiples scrolls para cargar toda la lista
-        max_scrolls = 20
+        max_scrolls = 30
         no_new_count = 0
         prev_count = len(likers_dict)
 
         for _ in range(max_scrolls):
-            # Identificar items dentro del modal
+            # Identificar items dentro del modal (incluye estructura del snippet)
             items = []
             for selector in FACEBOOK_CONFIG.get('modal_likes_item_selectors', []):
                 try:
@@ -380,42 +528,92 @@ async def extract_likes_from_modal(page, likers_dict):
             # Procesar items
             for it in items:
                 try:
-                    # Buscar enlace de perfil si lo hay
-                    enlace = await it.query_selector('a[href^="/"]') or await it.query_selector('a[role="link"]')
-                    href = await enlace.get_attribute('href') if enlace else None
-                    nombre = None
-
-                    # Buscar nombre visible
-                    for sel in ['span[dir="auto"]', 'strong', 'span']:  # generalistas
+                    # 1) Preferir anchor con texto (nombre visible)
+                    candidate_anchors = await it.query_selector_all('a[role="link"]')
+                    name_anchor = None
+                    for a in candidate_anchors:
                         try:
-                            el = await it.query_selector(sel)
-                            if el:
-                                t = await el.inner_text()
-                                if t and 1 < len(t.strip()) < 120:
-                                    nombre = t.strip()
-                                    break
+                            txt = (await a.inner_text() or '').strip()
+                            if txt:
+                                name_anchor = a
+                                break
                         except:
                             continue
+                    # Fallback: primer anchor (suele ser el avatar) y tomar aria-label
+                    if not name_anchor and candidate_anchors:
+                        name_anchor = candidate_anchors[0]
 
+                    if not name_anchor:
+                        continue
+
+                    href = await name_anchor.get_attribute('href')
+                    # Si el anchor de nombre no trae href, usar el del primero disponible
+                    if not href and candidate_anchors:
+                        href = await candidate_anchors[0].get_attribute('href')
+
+                    # Nombre visible
+                    nombre = (await name_anchor.inner_text() or '').strip()
+                    if not nombre:
+                        aria = (await name_anchor.get_attribute('aria-label') or '').strip()
+                        # Extraer del patrón 'Foto del perfil de <Nombre>'
+                        if 'Foto del perfil de' in aria:
+                            try:
+                                nombre = aria.split('Foto del perfil de', 1)[1].strip()
+                            except Exception:
+                                pass
+                        if not nombre:
+                            # Buscar un span visible dentro del item
+                            for sel in ['span[dir="auto"]', 'strong', 'span']:
+                                el = await it.query_selector(sel)
+                                if el:
+                                    t = (await el.inner_text() or '').strip()
+                                    if 1 < len(t) < 120:
+                                        nombre = t
+                                        break
                     if not nombre:
                         continue
 
+                    # Normalizar URL
                     if href:
-                        from src.utils.common import limpiar_url
-                        url = f"https://www.facebook.com{href}" if href.startswith('/') else href
+                        url = href if href.startswith('http') else f"https://www.facebook.com{href}"
                         url = limpiar_url(url)
                     else:
-                        url = f"about:blank#{hash(nombre)}"  # marcador sin URL
+                        url = f"about:blank#{hash(nombre)}"
 
                     if url in likers_dict:
                         continue
 
-                    username = url.rstrip('/').split('/')[-1] if href else nombre.replace(' ', '_').lower()
+                    # Foto (avatar) si existe
+                    foto = ''
+                    for img_sel in ['image[xlink\\:href]', 'img[src*="scontent"]']:
+                        img = await it.query_selector(img_sel)
+                        if img:
+                            foto = (await img.get_attribute('xlink:href') or await img.get_attribute('src') or '')
+                            if foto:
+                                break
+
+                    # Username desde URL
+                    username = None
+                    try:
+                        from urllib.parse import urlparse, parse_qs
+                        parsed = urlparse(url)
+                        if 'profile.php' in parsed.path:
+                            qs = parse_qs(parsed.query)
+                            username = (qs.get('id') or [None])[0]
+                        else:
+                            parts = [p for p in parsed.path.strip('/').split('/') if p]
+                            if parts:
+                                username = parts[0]
+                    except Exception:
+                        pass
+                    if not username:
+                        username = nombre.replace(' ', '_').lower()
+
                     likers_dict[url] = {
                         "nombre_usuario": nombre,
                         "username_usuario": username,
                         "link_usuario": url if href else "",
-                        "foto_usuario": "",
+                        "foto_usuario": foto,
                         "post_url": page.url
                     }
                     encontrados += 1
@@ -428,13 +626,13 @@ async def extract_likes_from_modal(page, likers_dict):
                 () => {
                     const modal = document.querySelector('div[role="dialog"], div[aria-modal="true"]');
                     if (!modal) return true;
-                    const scrollable = modal.querySelector('div[style*="overflow"], div[style*="height"], div[style*="max-height"]') || modal;
+                    const scrollable = modal.querySelector('div[style*="overflow"], div[style*="height"], div[style*="max-height"], div[data-visualcompletion="ignore-dynamic"]') || modal;
                     const before = scrollable.scrollTop;
                     scrollable.scrollTop += 600;
                     return (scrollable.scrollTop === before);
                 }
             """)
-            await page.wait_for_timeout(1200)
+            await page.wait_for_timeout(1000)
 
             if len(likers_dict) == prev_count:
                 no_new_count += 1
@@ -451,145 +649,56 @@ async def extract_likes_from_modal(page, likers_dict):
         return 0
 
 async def scrap_likes_facebook(page, perfil_url):
-    """Extraer usuarios que han dado like/reacciones en los posts del perfil"""
+    """Extraer likes/reacciones recorriendo la pestaña de fotos y abriendo cada foto."""
     from src.scrapers.facebook.config import FACEBOOK_CONFIG
-    print("\n🔄 Navegando al perfil para extraer likes...")
+    print("\n🔄 Navegando a /photos para extraer likes...")
     try:
-        await page.goto(perfil_url)
-        await page.wait_for_timeout(5000)
-
         likers_dict = {}
-        posts_procesados = 0
-        scroll_attempts = 0
-        max_scroll_attempts = 20
-        no_new_posts_count = 0
-        max_no_new_posts = 3
+        ok = await goto_photos_tab(page, perfil_url)
+        if not ok:
+            print("❌ No se pudo abrir la pestaña de fotos")
+            return []
 
-        posts_selectors = [
-            'div[role="article"]',
-            'div[data-pagelet="FeedUnit"]',
-            'div[data-ft*="top_level_post_id"]'
-        ]
+        processed = 0
+        scrolls = 0
+        max_scrolls = 30
 
-        while (posts_procesados < FACEBOOK_CONFIG['max_posts'] and
-               scroll_attempts < max_scroll_attempts and
-               no_new_posts_count < max_no_new_posts):
+        while processed < FACEBOOK_CONFIG['max_posts'] and scrolls < max_scrolls:
+            thumbs = await find_photo_thumbnails(page)
+            if not thumbs:
+                # Desplazarse para cargar más
+                await page.evaluate('window.scrollBy(0, window.innerHeight * 0.8)')
+                await page.wait_for_timeout(1200)
+                scrolls += 1
+                continue
 
-            try:
-                posts = []
-                for selector in posts_selectors:
-                    posts = await page.query_selector_all(selector)
-                    if posts:
-                        break
-
-                if not posts:
-                    no_new_posts_count += 1
-                    await page.evaluate("window.scrollBy(0, window.innerHeight * 0.5)")
-                    await page.wait_for_timeout(2500)
-                    scroll_attempts += 1
+            for idx in range(processed, min(len(thumbs), FACEBOOK_CONFIG['max_posts'])):
+                opened = await open_photo_modal_by_index(page, idx)
+                if not opened:
                     continue
+                try:
+                    opened_reactions = await open_reactions_list_from_modal(page)
+                    if opened_reactions:
+                        extra = await extract_likes_from_modal(page, likers_dict)
+                        print(f"  📊 Likes extraídos: {extra}")
+                        await close_any_modal(page)  # cierra lista de reacciones
+                    else:
+                        print("  ℹ️ No se encontró lista de reacciones en esta foto")
+                finally:
+                    await close_any_modal(page)  # cierra modal de foto
+                processed += 1
 
-                current_posts_count = posts_procesados
+            # Scroll para cargar siguiente bloque
+            if processed < FACEBOOK_CONFIG['max_posts']:
+                await page.evaluate('window.scrollBy(0, window.innerHeight * 0.9)')
+                await page.wait_for_timeout(1500)
+                scrolls += 1
 
-                for post_index in range(posts_procesados, min(len(posts), FACEBOOK_CONFIG['max_posts'])):
-                    try:
-                        current_posts = await page.query_selector_all(posts_selectors[0])
-                        if post_index >= len(current_posts):
-                            continue
-                        post = current_posts[post_index]
-
-                        is_connected = await post.evaluate("e => e.isConnected")
-                        if not is_connected:
-                            continue
-
-                        try:
-                            await post.scroll_into_view_if_needed()
-                            await page.wait_for_timeout(1200)
-                        except:
-                            await page.evaluate("window.scrollBy(0, 300)")
-                            await page.wait_for_timeout(600)
-
-                        likes_button = await find_likes_button(post)
-                        if likes_button:
-                            try:
-                                print("  🖱️ Abriendo modal de likes/reacciones...")
-                                try:
-                                    await likes_button.scroll_into_view_if_needed()
-                                except:
-                                    pass
-                                click_ok = False
-                                try:
-                                    await likes_button.click()
-                                    click_ok = True
-                                except:
-                                    # Fallback: click en ancestro clickable via JS
-                                    click_ok = await page.evaluate("""
-                                        (el) => {
-                                            const target = el.closest('div[role="button"], a[role="link"]') || el;
-                                            if (target) {
-                                                target.click();
-                                                return true;
-                                            }
-                                            return false;
-                                        }
-                                    """, likes_button)
-                                if not click_ok:
-                                    # Fallback final: dispatchEvent
-                                    await page.evaluate("(el)=>el.dispatchEvent(new MouseEvent('click', {bubbles:true}))", likes_button)
-                                await page.wait_for_timeout(2000)
-
-                                modal_found = await wait_for_modal(page)
-                                if modal_found:
-                                    extraidos = await extract_likes_from_modal(page, likers_dict)
-                                    print(f"  📊 Likes extraídos del modal: {extraidos}")
-                                    await close_modal(page)
-                                else:
-                                    print("  ⚠️ No se encontró modal de likes")
-                            except Exception as e:
-                                logger.debug(f"Click/lectura de likes falló: {e}")
-                        else:
-                            print(f"  ℹ️ No se encontró recuento/botón de likes en post {post_index+1}")
-
-                        posts_procesados += 1
-
-                        if posts_procesados % FACEBOOK_CONFIG.get('rate_limit_posts_interval', 3) == 0:
-                            print("  🔄 Pausa para evitar rate limiting...")
-                            await page.wait_for_timeout(FACEBOOK_CONFIG['rate_limit_pause_ms'])
-
-                    except Exception as e:
-                        logger.warning(f"Error procesando post (likes) {post_index}: {e}")
-                        continue
-
-                if posts_procesados == current_posts_count:
-                    no_new_posts_count += 1
-                else:
-                    no_new_posts_count = 0
-
-                if posts_procesados < FACEBOOK_CONFIG['max_posts']:
-                    await page.evaluate("window.scrollBy(0, window.innerHeight * 0.8)")
-                    await page.wait_for_timeout(2500)
-                    scroll_attempts += 1
-
-                    is_at_bottom = await page.evaluate("""
-                        () => (window.innerHeight + window.pageYOffset) >= document.body.scrollHeight - 1000
-                    """)
-                    if is_at_bottom:
-                        break
-
-            except Exception as e:
-                logger.warning(f"Error en scroll (likes) {scroll_attempts}: {e}")
-                no_new_posts_count += 1
-                await page.wait_for_timeout(800)
-
-        print(f"✅ Likers extraídos: {len(likers_dict)}")
+        print(f"✅ Likers extraídos (fotos): {len(likers_dict)}")
         return list(likers_dict.values())
     except Exception as e:
         print(f"❌ Error extrayendo likes: {e}")
         return []
-        
-    except Exception as e:
-        logger.warning(f"Error cerrando modal: {e}")
-        return False
 
 async def obtener_datos_usuario_principal(page, perfil_url):
     print("Obteniendo datos del perfil principal de Facebook...")
@@ -839,162 +948,46 @@ async def scrap_seguidos(page, perfil_url):
         return []
 
 async def scrap_comentadores_facebook(page, perfil_url):
-    """Extraer usuarios que han comentado en los posts del usuario principal con rate limiting mejorado"""
+    """Extraer comentadores recorriendo /photos y abriendo el modal de cada foto."""
     from src.scrapers.facebook.config import FACEBOOK_CONFIG
-    
-    print("\n🔄 Navegando al perfil para extraer comentadores...")
+    print("\n🔄 Navegando a /photos para extraer comentadores...")
     try:
-        await page.goto(perfil_url)
-        await page.wait_for_timeout(5000)
-
         comentadores_dict = {}
-        posts_procesados = 0
-        scroll_attempts = 0
-        max_scroll_attempts = 20
-        no_new_posts_count = 0
-        max_no_new_posts = 3
+        ok = await goto_photos_tab(page, perfil_url)
+        if not ok:
+            print("❌ No se pudo abrir la pestaña de fotos")
+            return []
 
-        while (posts_procesados < FACEBOOK_CONFIG['max_posts'] and 
-               scroll_attempts < max_scroll_attempts and 
-               no_new_posts_count < max_no_new_posts):
-            
-            try:
-                # Primero identificar posts de manera más estable
-                posts_selectors = [
-                    'div[role="article"]',
-                    'div[data-pagelet="FeedUnit"]',
-                    'div[data-ft*="top_level_post_id"]'
-                ]
-                
-                posts = []
-                for selector in posts_selectors:
-                    posts = await page.query_selector_all(selector)
-                    if posts:
-                        print(f"  ✓ Encontrados {len(posts)} posts usando selector: {selector}")
-                        break
-                
-                if not posts:
-                    print("  ⚠️ No se encontraron posts en esta iteración")
-                    no_new_posts_count += 1
-                    await page.evaluate("window.scrollBy(0, window.innerHeight * 0.5)")
-                    await page.wait_for_timeout(3000)
-                    scroll_attempts += 1
+        processed = 0
+        scrolls = 0
+        max_scrolls = 30
+
+        while processed < FACEBOOK_CONFIG['max_posts'] and scrolls < max_scrolls:
+            thumbs = await find_photo_thumbnails(page)
+            if not thumbs:
+                await page.evaluate('window.scrollBy(0, window.innerHeight * 0.8)')
+                await page.wait_for_timeout(1200)
+                scrolls += 1
+                continue
+
+            for idx in range(processed, min(len(thumbs), FACEBOOK_CONFIG['max_posts'])):
+                opened = await open_photo_modal_by_index(page, idx)
+                if not opened:
                     continue
-                
-                current_posts_count = posts_procesados
-                
-                for post_index in range(posts_procesados, min(len(posts), FACEBOOK_CONFIG['max_posts'])):
-                    try:
-                        if post_index >= len(posts):
-                            break
-                        
-                        # Re-obtener el post para evitar elementos desconectados del DOM
-                        current_posts = await page.query_selector_all(posts_selectors[0])
-                        if post_index >= len(current_posts):
-                            print(f"  ⚠️ Post {post_index} ya no está disponible")
-                            continue
-                            
-                        post = current_posts[post_index]
-                        
-                        # Verificar que el elemento esté conectado al DOM antes de hacer scroll
-                        is_connected = await post.evaluate("element => element.isConnected")
-                        if not is_connected:
-                            print(f"  ⚠️ Post {post_index} no está conectado al DOM, saltando...")
-                            continue
-                        
-                        print(f"  📝 Procesando post {post_index + 1}/{min(len(posts), FACEBOOK_CONFIG['max_posts'])}")
-                        
-                        # Scroll suave hacia el post
-                        try:
-                            await post.scroll_into_view_if_needed()
-                            await page.wait_for_timeout(2000)
-                        except Exception as scroll_error:
-                            print(f"  ⚠️ Error haciendo scroll al post {post_index}: {scroll_error}")
-                            # Intentar scroll manual como alternativa
-                            await page.evaluate("window.scrollBy(0, 300)")
-                            await page.wait_for_timeout(1000)
-                        
-                        # Buscar el botón de comentarios con estrategia generalista
-                        comment_button = await find_comment_button(post)
-                        
-                        if comment_button:
-                            try:
-                                # Hacer clic en el botón de comentarios para abrir el modal
-                                print(f"  🖱️ Haciendo clic en botón de comentarios...")
-                                await comment_button.click()
-                                await page.wait_for_timeout(3000)
-                                
-                                # Esperar a que aparezca el modal
-                                modal_found = await wait_for_modal(page)
-                                
-                                if modal_found:
-                                    print(f"  ✓ Modal de comentarios abierto")
-                                    # Extraer comentarios del modal
-                                    comentarios_extraidos = await extract_comments_from_modal(page, comentadores_dict)
-                                    print(f"  📊 Comentarios extraídos del modal: {comentarios_extraidos}")
-                                    
-                                    # Cerrar el modal
-                                    await close_modal(page)
-                                else:
-                                    print(f"  ⚠️ No se pudo abrir el modal de comentarios")
-                                
-                            except Exception as click_error:
-                                print(f"  ⚠️ Error procesando comentarios: {click_error}")
-                        else:
-                            print(f"  ℹ️ No se encontró botón de comentarios en el post {post_index + 1}")
+                try:
+                    added = await extract_comments_in_current_photo_modal(page, comentadores_dict)
+                    print(f"  � Comentadores extraídos de la foto: {added}")
+                finally:
+                    await close_any_modal(page)
+                processed += 1
 
-                        posts_procesados += 1
-                        print(f"  � Post {posts_procesados}/{FACEBOOK_CONFIG['max_posts']} procesado. Comentadores totales: {len(comentadores_dict)}")
-                        
-                        # Rate limiting cada 3 posts
-                        if posts_procesados % FACEBOOK_CONFIG.get('rate_limit_posts_interval', 3) == 0:
-                            print(f"  🔄 Pausa para evitar rate limiting...")
-                            await page.wait_for_timeout(FACEBOOK_CONFIG['rate_limit_pause_ms'])
+            if processed < FACEBOOK_CONFIG['max_posts']:
+                await page.evaluate('window.scrollBy(0, window.innerHeight * 0.9)')
+                await page.wait_for_timeout(1500)
+                scrolls += 1
 
-                    except Exception as e:
-                        logger.warning(f"Error procesando post {post_index}: {e}")
-                        continue
-                
-                # Si no se procesaron nuevos posts, incrementar contador
-                if posts_procesados == current_posts_count:
-                    no_new_posts_count += 1
-                    print(f"  ⏳ No se procesaron nuevos posts (intento {no_new_posts_count}/{max_no_new_posts})")
-                else:
-                    no_new_posts_count = 0
-                
-                # Scroll para cargar más posts
-                if posts_procesados < FACEBOOK_CONFIG['max_posts']:
-                    print(f"  📜 Haciendo scroll para cargar más posts...")
-                    await page.evaluate("window.scrollBy(0, window.innerHeight * 0.8)")
-                    await page.wait_for_timeout(3000)
-                    scroll_attempts += 1
-                    
-                    # Verificar si llegamos al final
-                    is_at_bottom = await page.evaluate("""
-                        () => {
-                            return (window.innerHeight + window.pageYOffset) >= document.body.scrollHeight - 1000;
-                        }
-                    """)
-                    
-                    if is_at_bottom:
-                        print("  ✅ Llegamos al final de los posts")
-                        break
-                
-            except Exception as e:
-                logger.warning(f"Error en scroll {scroll_attempts}: {e}")
-                no_new_posts_count += 1
-                await page.wait_for_timeout(1000)
-
-        print(f"✅ Comentadores extraídos: {len(comentadores_dict)}")
-        if not comentadores_dict:
-            print("ℹ️ Consejos para mejorar la extracción:")
-            print("  - Verifica que tengas permisos para ver los comentarios")
-            print("  - Asegúrate de estar autenticado correctamente")
-            print("  - Algunos posts pueden no tener comentarios visibles")
-            print("  - La estructura de Facebook puede haber cambiado")
-        
+        print(f"✅ Comentadores extraídos (fotos): {len(comentadores_dict)}")
         return list(comentadores_dict.values())
-
     except Exception as e:
         print(f"❌ Error extrayendo comentadores: {e}")
         return []
