@@ -11,6 +11,7 @@ from src.scrapers.facebook.scraper import (
     scrap_seguidores,
     scrap_seguidos,
     scrap_comentadores_facebook,
+    scrap_likes_facebook,
     scrap_lista_usuarios  # Para compatibilidad
 )
 from src.utils.output import guardar_resultados
@@ -23,9 +24,10 @@ def mostrar_menu():
     print("2. Scrapear seguidores")
     print("3. Scrapear seguidos")
     print("4. Scrapear comentadores")
-    print("5. Scrapear todo (amigos, seguidores, seguidos y comentadores)")
-    print("6. Salir")
-    return input("Selecciona una opción (1-6): ")
+    print("5. Scrapear likes (quiénes dieron me gusta/reacciones)")
+    print("6. Scrapear todo (amigos, seguidores, seguidos, comentadores y likes)")
+    print("7. Salir")
+    return input("Selecciona una opción (1-7): ")
 
 async def main_facebook():
     from src.scrapers.facebook.config import FACEBOOK_CONFIG
@@ -46,11 +48,11 @@ async def main_facebook():
             while True:
                 opcion = mostrar_menu()
 
-                if opcion not in ['1', '2', '3', '4', '5', '6']:
+                if opcion not in ['1', '2', '3', '4', '5', '6', '7']:
                     print("❌ Opción inválida. Por favor, selecciona una opción válida (1-6).")
                     continue
 
-                if opcion == '6':
+                if opcion == '7':
                     print("👋 Saliendo del programa...")
                     break
 
@@ -61,25 +63,30 @@ async def main_facebook():
                 seguidores = []
                 seguidos = []
                 comentadores = []
+                likers = []
 
-                if opcion in ['1', '5']:  # Scrapear amigos
+                if opcion in ['1', '6']:  # Scrapear amigos
                     print("\n🔍 Scrapeando amigos...")
                     amigos = await scrap_amigos(page, url)
 
-                if opcion in ['2', '5']:  # Scrapear seguidores
+                if opcion in ['2', '6']:  # Scrapear seguidores
                     print("\n🔍 Scrapeando seguidores...")
                     seguidores = await scrap_seguidores(page, url)
 
-                if opcion in ['3', '5']:  # Scrapear seguidos
+                if opcion in ['3', '6']:  # Scrapear seguidos
                     print("\n🔍 Scrapeando seguidos...")
                     seguidos = await scrap_seguidos(page, url)
 
-                if opcion in ['4', '5']:  # Scrapear comentadores
+                if opcion in ['4', '6']:  # Scrapear comentadores
                     print("\n🔍 Scrapeando comentadores...")
                     comentadores = await scrap_comentadores_facebook(page, url)
 
+                if opcion in ['5', '6']:  # Scrapear likes
+                    print("\n🔍 Scrapeando likes...")
+                    likers = await scrap_likes_facebook(page, url)
+
                 # Verificar si se encontraron datos
-                total_usuarios = len(amigos) + len(seguidores) + len(seguidos) + len(comentadores)
+                total_usuarios = len(amigos) + len(seguidores) + len(seguidos) + len(comentadores) + len(likers)
                 
                 if total_usuarios == 0:
                     print("⚠️ No se encontraron usuarios. Posibles causas:")
@@ -99,6 +106,8 @@ async def main_facebook():
                     print(f"  👥 Seguidos: {len(seguidos)}")
                 if comentadores:
                     print(f"  💬 Comentadores: {len(comentadores)}")
+                if likers:
+                    print(f"  👍 Likers: {len(likers)}")
 
                 # Guardar resultados - para Facebook, los amigos pueden ir en seguidores o crear una categoría especial
                 todos_usuarios = []
@@ -125,7 +134,7 @@ async def main_facebook():
                     datos_usuario, 
                     todos_usuarios,  # Todos los usuarios en la categoría de seguidores
                     [],              # Seguidos vacío para evitar duplicados
-                    comentadores if comentadores else [],
+                    (comentadores or []) + (likers or []),
                     platform='facebook'
                 )
                 print(f"\n🎉 ¡Scraping completado! {archivo_creado}")

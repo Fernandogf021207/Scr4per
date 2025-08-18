@@ -42,8 +42,10 @@ FACEBOOK_CONFIG = {
     ],
     "comment_container_selectors": [
         # Selectores generalistas para botones de comentarios
+        'div[role="button"]:has-text("Ver más comentarios")',
         'div[role="button"]:has-text("comentario")',
-        'div[role="button"]:has-text("comment")',
+        'div[role="button"]:has-text("comentarios")',
+        'div[role="button"]:has-text("")',
         'div[role="button"] i[style*="7H32i_pdCAf.png"]',
         'div[role="button"] i[data-visualcompletion="css-img"]',
         'div[aria-label*="comentario" i]',
@@ -63,6 +65,24 @@ FACEBOOK_CONFIG = {
         'div[role="dialog"] div:has(a[href^="/"])',
         'div[aria-modal="true"] div:has(a[href^="/"])',
         'div:has(a[href^="/"]):has(img[src*="scontent"])',
+    ],
+    "likes_button_selectors": [
+        # Área de recuento de reacciones/likes en el post
+        'div[role="toolbar"]:has(span:has-text("Consulta quién reaccionó a esto "))',
+        'div[role="toolbar"]:has(span:has-text("Consulta quién reaccionó a esto" i))',
+        'span:has-text("Me gusta")',
+        'span:has-text("likes" i)',
+    'span.x135b78x',
+        'a[role="link"]:has(span:has-text("likes" i))',
+        'div[aria-label*="Consulta quién reaccionó a esto" i]',
+        'div[aria-label*="Consulta quién reaccionó a esto" i]',
+    ],
+    "modal_likes_item_selectors": [
+        # Elementos de usuarios dentro del modal de likes
+        'div[role="dialog"] a[role="button"][tabindex="0"]',
+        'div[role="dialog"] div:has(a[href^="/"][role="link"])',
+        'div[role="dialog"] div[aria-label*="Personas" i] div:has(a)',
+        'div[role="dialog"] div[style*="display"]:has(a[href^="/"])',
     ],
     "patterns_to_exclude": [
         "/followers", "/following", "/friends", "/videos", "/photo", "/photos",
