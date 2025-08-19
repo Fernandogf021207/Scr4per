@@ -1,4 +1,4 @@
-def guardar_resultados(username, datos_usuario, seguidores, seguidos, comentadores, platform="x"):
+def guardar_resultados(username, datos_usuario, seguidores, seguidos, comentadores, platform="x", amigos=None):
     import pandas as pd
     import os
 
@@ -41,11 +41,21 @@ def guardar_resultados(username, datos_usuario, seguidores, seguidos, comentador
                 'url_foto_perfil_comentador': u['foto_usuario'],
                 'url_post': u.get('post_url', '')
             } for i, u in enumerate(lista)])
+        elif tipo == "amigos":
+            df = pd.DataFrame([{
+                'id_amigo': i + 1,
+                'id_usuario_principal': id_usuario,
+                'nombre_amigo': u['nombre_usuario'],
+                'username_amigo': u['username_usuario'],
+                'url_amigo': u['link_usuario'],
+                'url_foto_perfil_amigo': u['foto_usuario']
+            } for i, u in enumerate(lista)])
         return df
 
     df_seguidores = crear_df(seguidores, "seguidores")
     df_seguidos = crear_df(seguidos, "seguidos")
     df_comentadores = crear_df(comentadores, "comentadores")
+    df_amigos = crear_df(amigos or [], "amigos")
 
     os.makedirs('data/output', exist_ok=True)
     base = f"{platform}_scraper_{username}"
@@ -62,6 +72,8 @@ def guardar_resultados(username, datos_usuario, seguidores, seguidos, comentador
                 df_seguidos.to_excel(writer, sheet_name="Seguidos", index=False)
             if not df_comentadores.empty:
                 df_comentadores.to_excel(writer, sheet_name="Comentadores", index=False)
+            if not df_amigos.empty:
+                df_amigos.to_excel(writer, sheet_name="Amigos", index=False)
         print(f"\n✅ Archivo Excel creado: {archivo_excel}")
         output_result = archivo_excel
     except ImportError:
@@ -73,6 +85,8 @@ def guardar_resultados(username, datos_usuario, seguidores, seguidos, comentador
             df_seguidos.to_csv(f"data/output/{base}_seguidos.csv", index=False)
         if not df_comentadores.empty:
             df_comentadores.to_csv(f"data/output/{base}_comentadores.csv", index=False)
+        if not df_amigos.empty:
+            df_amigos.to_csv(f"data/output/{base}_amigos.csv", index=False)
         output_result = base
 
     # Alternate API insertion mode
@@ -107,6 +121,14 @@ def guardar_resultados(username, datos_usuario, seguidores, seguidos, comentador
                         continue
                     create_or_update_profile(platform, uname, u.get('nombre_usuario'), u.get('link_usuario'), u.get('foto_usuario'))
                     create_relationship(platform, owner_username, uname, 'following')
+
+                # Friends (Facebook)
+                for u in amigos or []:
+                    uname = u.get('username_usuario')
+                    if not uname:
+                        continue
+                    create_or_update_profile(platform, uname, u.get('nombre_usuario'), u.get('link_usuario'), u.get('foto_usuario'))
+                    create_relationship(platform, owner_username, uname, 'friend')
 
                 # Comments
                 if comentadores:
@@ -192,6 +214,23 @@ def guardar_resultados(username, datos_usuario, seguidores, seguidos, comentador
                                         following_inserted += 1
                             except Exception as e:
                                 print(f"⚠️ Error insertando seguido @{u.get('username_usuario')}: {e}")
+
+                        # Friends (Facebook)
+                        for u in amigos or []:
+                            try:
+                                uname = u.get('username_usuario')
+                                if uname:
+                                    upsert_profile(
+                                        cur,
+                                        platform,
+                                        uname,
+                                        u.get('nombre_usuario'),
+                                        u.get('link_usuario'),
+                                        u.get('foto_usuario')
+                                    )
+                                    add_relationship(cur, platform, owner_username, uname, 'friend')
+                            except Exception as e:
+                                print(f"⚠️ Error insertando amigo @{u.get('username_usuario')}: {e}")
 
                         # Comments (ensure posts exist first)
                         if comentadores:
