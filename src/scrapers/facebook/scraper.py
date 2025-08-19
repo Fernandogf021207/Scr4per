@@ -41,7 +41,7 @@ async def obtener_datos_usuario_facebook(page, perfil_url: str) -> dict:
 	foto = None
 	foto_selectores = [
 		'image[height][width]',
-		r'image[aria-label*="profile"][xlink\:href]',
+		'image[aria-label*="profile"][xlink\:href]',
 		'img[alt*="profile"], img[src*="scontent"]',
 		'image', 'img'
 	]
@@ -529,48 +529,92 @@ async def scrap_reacciones_fotos(page, perfil_url: str, username: str, max_fotos
 async def procesar_comentarios_en_modal_foto(page, comentarios_dict: Dict[str, dict], photo_url: str):
 	"""Busca perfiles de personas en la sección de comentarios del modal de fotos."""
 	try:
-		selectores = [
-			'div[role="dialog"] a[href^="/"][role="link"]',
-			'div[role="dialog"] a[role="link"]',
+		# 1) Ubicar bloques de comentario (role=article) dentro o fuera del dialog
+		selectores_articulo = [
+			'div[role="dialog"] [role="article"][aria-label^="Comentario"]',
+			'div[role="dialog"] [role="article"]',
+			'[role="article"][aria-label^="Comentario"]',
+			'[role="article"]',
 		]
-		for sel in selectores:
+		articulos = []
+		for s in selectores_articulo:
 			try:
-				enlaces = await page.query_selector_all(sel)
+				articulos = await page.query_selector_all(s)
 			except Exception:
-				enlaces = []
-			for e in enlaces:
-				try:
-					href = await get_attr(e, 'href')
-					if not href:
-						continue
-					url = normalize_profile_url(href)
-					# Filtrar rutas obvias que no son perfiles
-					if any(x in url for x in ["/p/", "/reel/", "/video", "/groups/", "/pages/"]):
-						continue
-					username = url.split('facebook.com/')[-1].strip('/')
-					if username in ("", "photo.php"):
-						continue
-					if url in comentarios_dict:
-						continue
-					nombre = await get_text(e)
-					foto = ''
+				articulos = []
+			if articulos:
+				break
+
+		if not articulos:
+			return
+
+		for art in articulos:
+			try:
+				# Dentro del artículo, priorizar el ancla visible con el nombre del usuario
+				candidatos = []
+				for sel in [
+					'a[role="link"][aria-hidden="false"]',
+					'a[role="link"]',
+					'a[href^="https://www.facebook.com/"]',
+					'a[href^="/"]',
+				]:
 					try:
-						cont = await e.evaluate_handle('el => el.closest("div")')
-						img = await cont.query_selector('img, image') if cont else None
-						src = await get_attr(img, 'src') or await get_attr(img, 'xlink:href')
-						if src and not src.startswith('data:'):
-							foto = src
+						cand = await art.query_selector_all(sel)
 					except Exception:
-						pass
-					comentarios_dict[url] = {
-						"nombre_usuario": nombre or username,
-						"username_usuario": username,
-						"link_usuario": url,
-						"foto_usuario": foto or "",
-						"post_url": photo_url,
-					}
-				except Exception:
+						cand = []
+					if cand:
+						candidatos.extend(cand)
+
+				elegido = None
+				for e in candidatos:
+					try:
+						href = await get_attr(e, 'href')
+						if not href:
+							continue
+						# Saltar anchors de timestamp que apuntan a la foto con comment_id
+						if ('/photo/?' in href) or ('/photo.php' in href and 'fbid=' in href and 'comment_id' in href):
+							continue
+						# Normalizar a perfil
+						url = normalize_profile_url(href)
+						if not url or 'facebook.com' not in url:
+							continue
+						if any(x in url for x in ["/groups/", "/pages/", "/events/"]):
+							continue
+						username = url.split('facebook.com/')[-1].strip('/')
+						if username in ("", "photo.php"):
+							continue
+						elegido = (e, url, username)
+						break
+					except Exception:
+						continue
+
+				if not elegido:
 					continue
+
+				e, url, username = elegido
+				if url in comentarios_dict:
+					continue
+
+				nombre = await get_text(e)
+				foto = ''
+				try:
+					cont = await e.evaluate_handle('el => el.closest("div")')
+					img = await cont.query_selector('img, image') if cont else None
+					src = await get_attr(img, 'src') or await get_attr(img, 'xlink:href')
+					if src and not src.startswith('data:'):
+						foto = src
+				except Exception:
+					pass
+
+				comentarios_dict[url] = {
+					"nombre_usuario": nombre or username,
+					"username_usuario": username,
+					"link_usuario": url,
+					"foto_usuario": foto or "",
+					"post_url": photo_url,
+				}
+			except Exception:
+				continue
 	except Exception:
 		return
 
@@ -593,12 +637,25 @@ async def scrap_comentarios_fotos(page, perfil_url: str, username: str, max_foto
 						'div[role="button"]:has-text("View more comments")',
 						'div[role="button"]:has-text("Cargar más comentarios")',
 						'div[role="button"][aria-label*="comentarios"]',
+						# Fallback: buscar el span y ascender al botón
+						'span:has-text("Ver más comentarios")',
+						'span:has-text("Mostrar más comentarios")',
+						'span:has-text("View more comments")',
+						'div[role="button"]:has-text("Ver más")',
+						'div[role="button"]:has-text("Mostrar más")',
+						'div[role="button"]:has-text("Ver respuestas")',
+						'div[role="button"]:has-text("Mostrar respuestas")',
 					]
 					clicked = False
 					for bsel in botones:
 						b = await page.query_selector(bsel)
 						if b:
-							await b.click()
+							# Si es el span, subir al contenedor con role=button
+							try:
+								role_btn = await b.evaluate_handle('el => el.closest("[role=\\"button\\"]") || el')
+								await role_btn.click()
+							except Exception:
+								await b.click()
 							await page.wait_for_timeout(900)
 							clicked = True
 							break
@@ -609,8 +666,22 @@ async def scrap_comentarios_fotos(page, perfil_url: str, username: str, max_foto
 					await page.evaluate("""
 						() => {
 							const modal = document.querySelector('div[role="dialog"]');
-							const el = modal || document.scrollingElement || document.body;
-							el.scrollTop += 600;
+							let el = modal;
+							if (modal) {
+								// buscar el contenedor scrolleable más grande dentro del modal
+								let best = modal;
+								const nodes = modal.querySelectorAll('div, section, main, article');
+								nodes.forEach(n => {
+									const sh = n.scrollHeight || 0;
+									const ch = n.clientHeight || 0;
+									const st = getComputedStyle(n).overflowY;
+									if (sh > ch + 50 && (st === 'auto' || st === 'scroll')) {
+										best = n;
+									}
+								});
+								el = best;
+							}
+							(el || document.scrollingElement || document.body).scrollTop += 800;
 						}
 					""")
 				except Exception:

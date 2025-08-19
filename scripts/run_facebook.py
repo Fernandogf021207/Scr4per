@@ -21,14 +21,12 @@ logger = setup_logging()
 
 def mostrar_menu():
 	print("\n📋 Menú de Opciones (Facebook):")
-	print("1. Scrapear amigos (/friends_all)")
-	print("2. Scrapear seguidores (/followers)")
-	print("3. Scrapear seguidos (/followed)")
+	print("1. Scrapear amigos, seguidores y seguidos")
+	print("2. Scrapear reacciones de fotos")
+	print("3. Scrapear comentarios de fotos")
 	print("4. Scrapear todo")
-	print("5. Scrapear reacciones en fotos")
-	print("6. Scrapear comentarios en fotos")
-	print("7. Salir")
-	return input("Selecciona una opción (1-7): ")
+	print("5. Salir")
+	return input("Selecciona una opción (1-5): ")
 
 
 async def main_facebook():
@@ -48,10 +46,10 @@ async def main_facebook():
 
 			while True:
 				opcion = mostrar_menu()
-				if opcion not in ['1', '2', '3', '4', '5', '6', '7']:
-					print("❌ Opción inválida. Por favor, selecciona una opción válida (1-7).")
+				if opcion not in ['1', '2', '3', '4', '5']:
+					print("❌ Opción inválida. Por favor, selecciona una opción válida (1-5).")
 					continue
-				if opcion == '7':
+				if opcion == '5':
 					print("👋 Saliendo del programa...")
 					break
 
@@ -64,31 +62,30 @@ async def main_facebook():
 				reacciones = []
 				comentarios_foto = []
 
+				# Opción 1: Listas (amigos, seguidores, seguidos)
 				if opcion in ['1', '4']:
 					print("\n🔍 Scrapeando amigos (/friends_all)...")
 					amigos = await scrap_friends_all(page, url, username)
-
-				if opcion in ['2', '4']:
 					print("\n🔍 Scrapeando seguidores (/followers)...")
 					seguidores = await scrap_followers(page, url, username)
-
-				if opcion in ['3', '4']:
 					print("\n🔍 Scrapeando seguidos (/followed)...")
 					seguidos = await scrap_followed(page, url, username)
 
-				if opcion == '5':
+				# Opción 2: Reacciones de fotos (y en 'todo')
+				if opcion in ['2', '4']:
 					print("\n📸 Reacciones en fotos")
 					try:
-						max_fotos = int(input("¿Cuántas fotos analizar? [5]: ") or "5")
+						max_fotos = int(input("¿Cuántas fotos analizar para reacciones? [5]: ") or "5")
 					except ValueError:
 						max_fotos = 5
 					incluir_comentarios = (input("¿Incluir reacciones en comentarios? (s/n) [n]: ").strip().lower() == 's')
 					reacciones = await scrap_reacciones_fotos(page, url, username, max_fotos=max_fotos, incluir_comentarios=incluir_comentarios)
 
-				if opcion == '6':
+				# Opción 3: Comentarios de fotos (y en 'todo')
+				if opcion in ['3', '4']:
 					print("\n💬 Comentarios en fotos")
 					try:
-						max_fotos = int(input("¿Cuántas fotos analizar? [5]: ") or "5")
+						max_fotos = int(input("¿Cuántas fotos analizar para comentarios? [5]: ") or "5")
 					except ValueError:
 						max_fotos = 5
 					comentarios_foto = await scrap_comentarios_fotos(page, url, username, max_fotos=max_fotos)
