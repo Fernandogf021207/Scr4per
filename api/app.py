@@ -45,11 +45,11 @@ from src.scrapers.x.config import X_CONFIG
 load_dotenv(dotenv_path=os.path.join(os.path.dirname(__file__), '..', 'db', '.env'))
 
 DB_CONFIG = {
-    "host": os.getenv("POSTGRES_HOST", "localhost"),
-    "port": int(os.getenv("POSTGRES_PORT", "5432")),
-    "dbname": os.getenv("POSTGRES_DB", "scr4per"),
-    "user": os.getenv("POSTGRES_USER", "scr4per_user"),
-    "password": os.getenv("POSTGRES_PASSWORD", "your_password_here"),
+    "host": os.getenv("POSTGRES_HOST"),
+    "port": int(os.getenv("POSTGRES_PORT")),
+    "dbname": os.getenv("POSTGRES_DB"),
+    "user": os.getenv("POSTGRES_USER"),
+    "password": os.getenv("POSTGRES_PASSWORD"),
 }
 
 app = FastAPI(title="Scr4per DB API", version="0.1.0")
@@ -79,7 +79,7 @@ class RelationshipIn(BaseModel):
     platform: Literal['x', 'instagram', 'facebook']
     owner_username: str
     related_username: str
-    rel_type: Literal['follower', 'following', 'friend']
+    rel_type: Literal['follower', 'following', 'friend', 'commented', 'reacted']
 
 class PostIn(BaseModel):
     platform: Literal['x', 'instagram', 'facebook']
@@ -297,6 +297,114 @@ def _storage_state_for(platform: str) -> str:
 def _extract_username(item: Dict[str, Any]) -> Optional[str]:
     return (item or {}).get('username_usuario') or (item or {}).get('username')
 
+def _extract_fields(item: Dict[str, Any]) -> Dict[str, Optional[str]]:
+    """Mapea campos comunes desde objetos del scraper a full_name/profile_url/photo_url."""
+    return {
+        'full_name': (item or {}).get('nombre_usuario') or (item or {}).get('full_name'),
+        'profile_url': (item or {}).get('link_usuario') or (item or {}).get('profile_url'),
+        'photo_url': (item or {}).get('foto_usuario') or (item or {}).get('photo_url'),
+    }
+
+def _build_related_from_db(cur, platform: str, owner_username: str) -> List[Dict[str, Any]]:
+    """Lee de la DB los perfiles relacionados (seguidores, seguidos, amigos, comentadores, reaccionadores)
+    y devuelve una lista con username, full_name, profile_url, photo_url y tipo de relacion.
+    """
+    schema = _schema(platform)
+    # Owner id
+    cur.execute(
+        f"SELECT id FROM {schema}.profiles WHERE platform=%s AND username=%s",
+        (platform, owner_username)
+    )
+    row = cur.fetchone()
+    if not row:
+        return []
+    owner_id = row["id"]
+
+    relacionados: Dict[str, Dict[str, Any]] = {}
+
+    # Relaciones directas (followers/following/friend)
+    cur.execute(
+        f"""
+        SELECT p.username, p.full_name, p.profile_url, p.photo_url, r.rel_type
+        FROM {schema}.relationships r
+        JOIN {schema}.profiles p ON p.id = r.related_profile_id
+        WHERE r.owner_profile_id = %s
+        """,
+        (owner_id,)
+    )
+    for r in cur.fetchall() or []:
+        uname = r["username"]
+        relacionados.setdefault(uname, {
+            "username": uname,
+            "full_name": r.get("full_name"),
+            "profile_url": r.get("profile_url"),
+            "photo_url": r.get("photo_url"),
+            "tipo de relacion": r.get("rel_type"),
+        })
+
+    # Comentadores sobre posts del owner
+    try:
+        cur.execute(
+            f"""
+            SELECT DISTINCT p.username, p.full_name, p.profile_url, p.photo_url
+            FROM {schema}.comments c
+            JOIN {schema}.posts po ON po.id = c.post_id
+            JOIN {schema}.profiles p ON p.id = c.commenter_profile_id
+            WHERE po.owner_profile_id = %s
+            """,
+            (owner_id,)
+        )
+        for r in cur.fetchall() or []:
+            uname = r["username"]
+            if uname not in relacionados:
+                relacionados[uname] = {
+                    "username": uname,
+                    "full_name": r.get("full_name"),
+                    "profile_url": r.get("profile_url"),
+                    "photo_url": r.get("photo_url"),
+                    "tipo de relacion": 'comentó',
+                }
+    except Exception:
+        # Tabla puede no existir para algunas plataformas
+        pass
+
+    # Reaccionadores sobre posts del owner
+    try:
+        cur.execute(
+            f"""
+            SELECT DISTINCT p.username, p.full_name, p.profile_url, p.photo_url
+            FROM {schema}.reactions rx
+            JOIN {schema}.posts po ON po.id = rx.post_id
+            JOIN {schema}.profiles p ON p.id = rx.reactor_profile_id
+            WHERE po.owner_profile_id = %s
+            """,
+            (owner_id,)
+        )
+        for r in cur.fetchall() or []:
+            uname = r["username"]
+            if uname not in relacionados:
+                relacionados[uname] = {
+                    "username": uname,
+                    "full_name": r.get("full_name"),
+                    "profile_url": r.get("profile_url"),
+                    "photo_url": r.get("photo_url"),
+                    "tipo de relacion": 'reaccionó',
+                }
+    except Exception:
+        pass
+
+    # Transform to list
+    return [
+        {
+            "username": uname,
+            "full_name": data.get("full_name"),
+            "profile_url": data.get("profile_url"),
+            "photo_url": data.get("photo_url"),
+            "tipo de relacion": data.get("tipo de relacion"),
+        }
+        for uname, data in relacionados.items()
+    ]
+
 @app.post("/scrape")
 async def scrape(req: ScrapeRequest):
     platform = req.platform
@@ -313,7 +421,7 @@ async def scrape(req: ScrapeRequest):
     tipos_presentes: set = set()
 
     async with async_playwright() as pw:
-        browser = await pw.chromium.launch(headless=False)
+        browser = await pw.chromium.launch(headless=True)
         context = await browser.new_context(storage_state=storage_state)
         page = await context.new_page()
         try:
@@ -376,20 +484,46 @@ async def scrape(req: ScrapeRequest):
             commenters_usernames = [
                 (_extract_username(x)) for x in commenters_items if _extract_username(x)
             ]
+            reactors_usernames = [u for u in ([_extract_username(x) for x in (reactions or [])] if reactions else []) if u]
 
             # Persist into DB
             with get_conn() as conn:
                 with conn.cursor() as cur:
                     # Ensure target profile exists
                     upsert_profile(cur, platform, perfil_obj['username'], perfil_obj.get('full_name'), perfil_obj.get('profile_url'), perfil_obj.get('photo_url'))
-                    # Relationships
+                    # Index scraped items by username for details
+                    by_username: Dict[str, Dict[str, Any]] = {}
+                    for lst in [followers or [], following or [], friends or [], commenters or [], reactions or []]:
+                        for it in lst:
+                            uname = _extract_username(it)
+                            if not uname:
+                                continue
+                            # Prefer earliest non-empty details; don't overwrite existing
+                            if uname not in by_username:
+                                by_username[uname] = _extract_fields(it)
+                            else:
+                                fields = _extract_fields(it)
+                                curf = by_username[uname]
+                                by_username[uname] = {
+                                    'full_name': curf.get('full_name') or fields.get('full_name'),
+                                    'profile_url': curf.get('profile_url') or fields.get('profile_url'),
+                                    'photo_url': curf.get('photo_url') or fields.get('photo_url'),
+                                }
+
+                    # Relationships: upsert profile with details first, then add relationship
                     for u in followers_usernames:
+                        f = by_username.get(u, {})
+                        upsert_profile(cur, platform, u, f.get('full_name'), f.get('profile_url'), f.get('photo_url'))
                         add_relationship(cur, platform, perfil_obj['username'], u, 'follower')
                     for u in following_usernames:
+                        f = by_username.get(u, {})
+                        upsert_profile(cur, platform, u, f.get('full_name'), f.get('profile_url'), f.get('photo_url'))
                         add_relationship(cur, platform, perfil_obj['username'], u, 'following')
                     # Friends only FB
                     if platform == 'facebook':
                         for u in friends_usernames:
+                            f = by_username.get(u, {})
+                            upsert_profile(cur, platform, u, f.get('full_name'), f.get('profile_url'), f.get('photo_url'))
                             add_relationship(cur, platform, perfil_obj['username'], u, 'friend')
                     # Posts + comments
                     # Build set of photo/post URLs from commenters items
@@ -404,6 +538,9 @@ async def scrape(req: ScrapeRequest):
                         purl = item.get('post_url')
                         uname = _extract_username(item)
                         if purl and uname:
+                            # Upsert commenter with details if available
+                            f = _extract_fields(item)
+                            upsert_profile(cur, platform, uname, f.get('full_name'), f.get('profile_url'), f.get('photo_url'))
                             try:
                                 add_comment(cur, platform, purl, uname)
                             except ValueError:
@@ -416,6 +553,9 @@ async def scrape(req: ScrapeRequest):
                         uname = _extract_username(rx)
                         if purl and uname:
                             try:
+                                # Upsert reactor with details
+                                f = _extract_fields(rx)
+                                upsert_profile(cur, platform, uname, f.get('full_name'), f.get('profile_url'), f.get('photo_url'))
                                 add_post(cur, platform, perfil_obj['username'], purl)
                                 add_reaction(cur, platform, purl, uname, rx.get('reaction_type'))
                             except ValueError:
@@ -423,25 +563,32 @@ async def scrape(req: ScrapeRequest):
                                 add_reaction(cur, platform, purl, uname, rx.get('reaction_type'))
                     conn.commit()
 
-            # Build normalized response (exactly three top-level fields)
-            relacionados_map = {}
-            for u in followers_usernames:
-                relacionados_map.setdefault(u, 'seguidor')
-            for u in following_usernames:
-                relacionados_map.setdefault(u, 'seguido')
-            for u in commenters_usernames:
-                relacionados_map.setdefault(u, 'comentó')
-
-            relacionados = [
-                {"username": uname, "tipo de relacion": tipo}
-                for uname, tipo in relacionados_map.items()
-            ]
-            tipos_presentes = set(relacionados_map.values())
+            # Build response from DB to ensure completeness (requested for Facebook)
+            try:
+                with get_conn() as conn2:
+                    with conn2.cursor() as cur2:
+                        relacionados = _build_related_from_db(cur2, platform, perfil_obj['username'])
+            except Exception:
+                # Fallback to in-memory minimal set if DB query fails
+                relacionados_map = {}
+                for u in followers_usernames:
+                    relacionados_map.setdefault(u, 'seguidor')
+                for u in following_usernames:
+                    relacionados_map.setdefault(u, 'seguido')
+                for u in commenters_usernames:
+                    relacionados_map.setdefault(u, 'comentó')
+                for u in friends_usernames:
+                    relacionados_map.setdefault(u, 'amigo')
+                for u in reactors_usernames:
+                    relacionados_map.setdefault(u, 'reaccionó')
+                relacionados = [
+                    {"username": uname, "tipo de relacion": tipo, "full_name": None, "profile_url": None, "photo_url": None}
+                    for uname, tipo in relacionados_map.items()
+                ]
 
             return {
                 "Perfil objetivo": perfil_obj,
                 "Perfiles relacionados": relacionados,
-                "Tipo de relacion": sorted(tipos_presentes),
             }
         finally:
             await context.close()
