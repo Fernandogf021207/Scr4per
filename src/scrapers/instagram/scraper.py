@@ -92,44 +92,58 @@ async def extraer_usuarios_instagram(page, tipo_lista="seguidores", usuario_prin
     print(f"Cargando {tipo_lista}...")
     usuarios_dict = {}
     
-    # Scroll manual en el modal para cargar más usuarios
+    # Scroll robusto en el modal para cargar más usuarios
     print(f"📜 Haciendo scroll en modal de {tipo_lista}...")
-    
+
+    # Intentar identificar el contenedor scrolleable real dentro del modal
+    container = None
+    try:
+        container = await page.evaluate_handle("""
+            () => {
+                const modal = document.querySelector('div[role="dialog"], div[aria-modal="true"]');
+                if (!modal) return null;
+                let best = modal; let maxScore = 0;
+                const all = modal.querySelectorAll('*');
+                for (const n of all) {
+                    const sh = n.scrollHeight || 0;
+                    const ch = n.clientHeight || 0;
+                    if (sh > ch + 40) {
+                        const st = getComputedStyle(n).overflowY;
+                        const score = (sh - ch);
+                        if ((st === 'auto' || st === 'scroll') && score > maxScore) {
+                            maxScore = score; best = n;
+                        }
+                    }
+                }
+                return best;
+            }
+        """)
+    except Exception:
+        container = None
+
     scroll_attempts = 0
-    max_scrolls = 50
+    max_scrolls = 60
     no_new_users_count = 0
-    max_no_new_users = 5
-    
+    max_no_new_users = 6
+
     while scroll_attempts < max_scrolls and no_new_users_count < max_no_new_users:
         try:
             current_user_count = len(usuarios_dict)
-            
-            # Scroll manual específico para modal de Instagram
-            await page.evaluate("""
-                () => {
-                    // Buscar el modal/dialog que contiene la lista
-                    const modal = document.querySelector('div[role="dialog"]') || 
-                                 document.querySelector('div[aria-modal="true"]') ||
-                                 document.querySelector('div[style*="overflow"]');
-                    
-                    if (modal) {
-                        // Buscar el contenedor scrolleable dentro del modal
-                        const scrollableContainer = modal.querySelector('div[style*="overflow-y"]') ||
-                                                  modal.querySelector('div[style*="overflow: auto"]') ||
-                                                  modal.querySelector('div[style*="max-height"]') ||
-                                                  modal;
-                        
-                        // Hacer scroll hacia abajo en el contenedor
-                        scrollableContainer.scrollTop += 400;
-                    }
-                }
-            """)
-            
-            await page.wait_for_timeout(2000)
-            
+
+            if container:
+                try:
+                    await container.evaluate("el => el.scrollTop = Math.min(el.scrollTop + 800, el.scrollHeight)")
+                except Exception:
+                    # Fallback a scroll de ventana
+                    await page.evaluate("window.scrollBy(0, 600)")
+            else:
+                await page.evaluate("window.scrollBy(0, 600)")
+
+            await page.wait_for_timeout(1200)
+
             # Procesar usuarios después del scroll
             await procesar_usuarios_en_modal(page, usuarios_dict, usuario_principal, tipo_lista)
-            
+
             # Verificar si se agregaron nuevos usuarios
             if len(usuarios_dict) > current_user_count:
                 no_new_users_count = 0
@@ -137,35 +151,32 @@ async def extraer_usuarios_instagram(page, tipo_lista="seguidores", usuario_prin
             else:
                 no_new_users_count += 1
                 print(f"  ⏳ Sin nuevos usuarios en scroll {scroll_attempts + 1} (intentos: {no_new_users_count})")
-            
+
             scroll_attempts += 1
-            
-            # Pausa cada 10 scrolls para evitar rate limiting
-            if scroll_attempts % 10 == 0:
+
+            # Pausa cada 12 scrolls para evitar rate limiting
+            if scroll_attempts % 12 == 0:
                 print(f"  🔄 Pausa para evitar rate limiting... ({len(usuarios_dict)} usuarios hasta ahora)")
-                await page.wait_for_timeout(3000)
-            
-            # Verificar si llegamos al final del modal
-            is_at_bottom = await page.evaluate("""
-                () => {
-                    const modal = document.querySelector('div[role="dialog"]') || 
-                                 document.querySelector('div[aria-modal="true"]');
-                    if (!modal) return false;
-                    
-                    const scrollableContainer = modal.querySelector('div[style*="overflow-y"]') ||
-                                              modal.querySelector('div[style*="overflow: auto"]') ||
-                                              modal.querySelector('div[style*="max-height"]') ||
-                                              modal;
-                    
-                    return (scrollableContainer.scrollTop + scrollableContainer.clientHeight) >= 
-                           (scrollableContainer.scrollHeight - 100);
-                }
-            """)
-            
+                await page.wait_for_timeout(2500)
+
+            # Verificar si llegamos al final del contenedor
+            is_at_bottom = False
+            try:
+                if container:
+                    is_at_bottom = await container.evaluate(
+                        "el => (el.scrollTop + el.clientHeight) >= (el.scrollHeight - 120)"
+                    )
+                else:
+                    is_at_bottom = await page.evaluate(
+                        "() => (window.innerHeight + window.pageYOffset) >= (document.body.scrollHeight - 200)"
+                    )
+            except Exception:
+                is_at_bottom = False
+
             if is_at_bottom and no_new_users_count >= 3:
                 print(f"  ✅ Llegamos al final de la lista de {tipo_lista}")
                 break
-                
+
         except Exception as e:
             logger.warning(f"Error en scroll {scroll_attempts}: {e}")
             no_new_users_count += 1
@@ -422,6 +433,107 @@ async def extraer_posts_del_perfil(page, max_posts=10):
         
     except Exception as e:
         logger.error(f"Error extrayendo posts: {e}")
+        return []
+
+async def _abrir_liked_by_y_extraer_usuarios(page, post_url: str):
+    """Abre el listado de liked_by de un post y retorna usuarios que dieron like."""
+    try:
+        await page.goto(post_url)
+        await page.wait_for_timeout(2000)
+        # Buscar enlace liked_by
+        a = await page.query_selector('a[href*="/liked_by/"]')
+        if not a:
+            # Algunos layouts muestran un botón o span clicable cerca del contador de likes
+            for sel in [
+                'a:has-text("likes")',
+                'a:has-text("Me gusta")',
+                'div[role="button"]:has-text("likes")',
+                'div[role="button"]:has-text("Me gusta")'
+            ]:
+                a = await page.query_selector(sel)
+                if a:
+                    break
+        if not a:
+            return []
+        await a.click()
+        await page.wait_for_timeout(1500)
+
+        # Reutilizar scroll de modal como en listas
+        usuarios_dict = {}
+
+        # identificar contenedor scrolleable
+        try:
+            container = await page.evaluate_handle("""
+                () => {
+                    const modal = document.querySelector('div[role="dialog"], div[aria-modal="true"]');
+                    if (!modal) return null;
+                    let best = modal; let maxScore = 0;
+                    const all = modal.querySelectorAll('*');
+                    for (const n of all) {
+                        const sh = n.scrollHeight || 0; const ch = n.clientHeight || 0;
+                        if (sh > ch + 40) {
+                            const st = getComputedStyle(n).overflowY;
+                            const score = (sh - ch);
+                            if ((st === 'auto' || st === 'scroll') && score > maxScore) { maxScore = score; best = n; }
+                        }
+                    }
+                    return best;
+                }
+            """)
+        except Exception:
+            container = None
+
+        scrolls = 0
+        no_new = 0
+        while scrolls < 50 and no_new < 6:
+            before = len(usuarios_dict)
+            # Procesar usuarios visibles en el modal reutilizando el procesador de listas
+            try:
+                await procesar_usuarios_en_modal(page, usuarios_dict, usuario_principal="", tipo_lista="liked_by")
+            except Exception:
+                pass
+
+            if len(usuarios_dict) == before:
+                no_new += 1
+            else:
+                no_new = 0
+
+            # Scroll
+            try:
+                if container:
+                    await container.evaluate('el => el.scrollTop = Math.min(el.scrollTop + 800, el.scrollHeight)')
+                else:
+                    await page.evaluate('window.scrollBy(0, 600)')
+            except Exception:
+                pass
+            await page.wait_for_timeout(900)
+            scrolls += 1
+
+        # Enriquecer con post_url y reaction_type
+        res = []
+        for v in usuarios_dict.values():
+            v = dict(v)
+            v["post_url"] = post_url
+            v["reaction_type"] = "like"
+            res.append(v)
+        return res
+    except Exception:
+        return []
+
+async def scrap_reacciones_instagram(page, perfil_url: str, username: str, max_posts: int = 5):
+    """Scrapea usuarios que dieron like (liked_by) en los últimos posts."""
+    try:
+        await page.goto(perfil_url)
+        await page.wait_for_timeout(1500)
+        posts = await extraer_posts_del_perfil(page, max_posts=max_posts)
+        resultados = []
+        for i, post in enumerate(posts, 1):
+            likes = await _abrir_liked_by_y_extraer_usuarios(page, post)
+            resultados.extend(likes)
+            if i % 3 == 0:
+                await page.wait_for_timeout(1200)
+        return resultados
+    except Exception:
         return []
 
 async def extraer_comentarios_post(page, url_post, post_id):

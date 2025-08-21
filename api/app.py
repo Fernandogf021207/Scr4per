@@ -31,6 +31,7 @@ from src.scrapers.instagram.scraper import (
     scrap_seguidores as ig_scrap_followers,
     scrap_seguidos as ig_scrap_followed,
     scrap_comentadores_instagram as ig_scrap_commenters,
+    scrap_reacciones_instagram as ig_scrap_reactions,
 )
 from src.scrapers.instagram.config import INSTAGRAM_CONFIG
 from src.scrapers.x.scraper import (
@@ -457,7 +458,7 @@ async def scrape(req: ScrapeRequest):
                 following = await ig_scrap_followed(page, url, username)
                 friends = []
                 commenters = await ig_scrap_commenters(page, url, username, max_posts=max_photos)
-                reactions = []  # Not implemented for IG in current codebase
+                reactions = await ig_scrap_reactions(page, url, username, max_posts=max_photos)
             elif platform == 'x':
                 datos = await x_obtener_datos(page, url)
                 username = datos.get('username') or 'unknown'
