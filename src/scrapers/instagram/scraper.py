@@ -92,44 +92,58 @@ async def extraer_usuarios_instagram(page, tipo_lista="seguidores", usuario_prin
     print(f"Cargando {tipo_lista}...")
     usuarios_dict = {}
     
-    # Scroll manual en el modal para cargar más usuarios
+    # Scroll robusto en el modal para cargar más usuarios
     print(f"📜 Haciendo scroll en modal de {tipo_lista}...")
-    
+
+    # Intentar identificar el contenedor scrolleable real dentro del modal
+    container = None
+    try:
+        container = await page.evaluate_handle("""
+            () => {
+                const modal = document.querySelector('div[role="dialog"], div[aria-modal="true"]');
+                if (!modal) return null;
+                let best = modal; let maxScore = 0;
+                const all = modal.querySelectorAll('*');
+                for (const n of all) {
+                    const sh = n.scrollHeight || 0;
+                    const ch = n.clientHeight || 0;
+                    if (sh > ch + 40) {
+                        const st = getComputedStyle(n).overflowY;
+                        const score = (sh - ch);
+                        if ((st === 'auto' || st === 'scroll') && score > maxScore) {
+                            maxScore = score; best = n;
+                        }
+                    }
+                }
+                return best;
+            }
+        """)
+    except Exception:
+        container = None
+
     scroll_attempts = 0
-    max_scrolls = 50
+    max_scrolls = 60
     no_new_users_count = 0
-    max_no_new_users = 5
-    
+    max_no_new_users = 6
+
     while scroll_attempts < max_scrolls and no_new_users_count < max_no_new_users:
         try:
             current_user_count = len(usuarios_dict)
-            
-            # Scroll manual específico para modal de Instagram
-            await page.evaluate("""
-                () => {
-                    // Buscar el modal/dialog que contiene la lista
-                    const modal = document.querySelector('div[role="dialog"]') || 
-                                 document.querySelector('div[aria-modal="true"]') ||
-                                 document.querySelector('div[style*="overflow"]');
-                    
-                    if (modal) {
-                        // Buscar el contenedor scrolleable dentro del modal
-                        const scrollableContainer = modal.querySelector('div[style*="overflow-y"]') ||
-                                                  modal.querySelector('div[style*="overflow: auto"]') ||
-                                                  modal.querySelector('div[style*="max-height"]') ||
-                                                  modal;
-                        
-                        // Hacer scroll hacia abajo en el contenedor
-                        scrollableContainer.scrollTop += 400;
-                    }
-                }
-            """)
-            
-            await page.wait_for_timeout(2000)
-            
+
+            if container:
+                try:
+                    await container.evaluate("el => el.scrollTop = Math.min(el.scrollTop + 800, el.scrollHeight)")
+                except Exception:
+                    # Fallback a scroll de ventana
+                    await page.evaluate("window.scrollBy(0, 600)")
+            else:
+                await page.evaluate("window.scrollBy(0, 600)")
+
+            await page.wait_for_timeout(1200)
+
             # Procesar usuarios después del scroll
             await procesar_usuarios_en_modal(page, usuarios_dict, usuario_principal, tipo_lista)
-            
+
             # Verificar si se agregaron nuevos usuarios
             if len(usuarios_dict) > current_user_count:
                 no_new_users_count = 0
@@ -137,35 +151,32 @@ async def extraer_usuarios_instagram(page, tipo_lista="seguidores", usuario_prin
             else:
                 no_new_users_count += 1
                 print(f"  ⏳ Sin nuevos usuarios en scroll {scroll_attempts + 1} (intentos: {no_new_users_count})")
-            
+
             scroll_attempts += 1
-            
-            # Pausa cada 10 scrolls para evitar rate limiting
-            if scroll_attempts % 10 == 0:
+
+            # Pausa cada 12 scrolls para evitar rate limiting
+            if scroll_attempts % 12 == 0:
                 print(f"  🔄 Pausa para evitar rate limiting... ({len(usuarios_dict)} usuarios hasta ahora)")
-                await page.wait_for_timeout(3000)
-            
-            # Verificar si llegamos al final del modal
-            is_at_bottom = await page.evaluate("""
-                () => {
-                    const modal = document.querySelector('div[role="dialog"]') || 
-                                 document.querySelector('div[aria-modal="true"]');
-                    if (!modal) return false;
-                    
-                    const scrollableContainer = modal.querySelector('div[style*="overflow-y"]') ||
-                                              modal.querySelector('div[style*="overflow: auto"]') ||
-                                              modal.querySelector('div[style*="max-height"]') ||
-                                              modal;
-                    
-                    return (scrollableContainer.scrollTop + scrollableContainer.clientHeight) >= 
-                           (scrollableContainer.scrollHeight - 100);
-                }
-            """)
-            
+                await page.wait_for_timeout(2500)
+
+            # Verificar si llegamos al final del contenedor
+            is_at_bottom = False
+            try:
+                if container:
+                    is_at_bottom = await container.evaluate(
+                        "el => (el.scrollTop + el.clientHeight) >= (el.scrollHeight - 120)"
+                    )
+                else:
+                    is_at_bottom = await page.evaluate(
+                        "() => (window.innerHeight + window.pageYOffset) >= (document.body.scrollHeight - 200)"
+                    )
+            except Exception:
+                is_at_bottom = False
+
             if is_at_bottom and no_new_users_count >= 3:
                 print(f"  ✅ Llegamos al final de la lista de {tipo_lista}")
                 break
-                
+
         except Exception as e:
             logger.warning(f"Error en scroll {scroll_attempts}: {e}")
             no_new_users_count += 1
