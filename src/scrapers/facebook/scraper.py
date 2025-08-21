@@ -158,7 +158,11 @@ async def procesar_tarjetas_usuario(page, usuarios: Dict[str, dict], usuario_pri
 					continue
 
 				# Filtrar no-perfiles comunes
-				invalid_paths = ['photo', 'groups', 'events', 'pages', 'watch', 'marketplace', 'reel']
+				invalid_paths = [
+					'photo', 'groups', 'events', 'pages', 'watch', 'marketplace', 'reel',
+					'reviews_given', 'reviews_written', 'video_movies_watch', 'profile_songs',
+					'places_recent', 'posts/'
+				]
 				if any(f"/{pat}" in url for pat in invalid_paths):
 					continue
 
@@ -274,7 +278,8 @@ async def extraer_amigos_facebook(page, usuario_principal: str) -> List[dict]:
 		"/tv", "/events", "/past_events", "/likes", "/likes_all",
 		"/music", "/sports", "/map", "/movies", "/pages",
 		"/groups", "/watch", "/reel", "/story", "/video_tv_shows_watch",
-		"/games"
+		"/games", "/reviews_given", "/reviews_written", "/video_movies_watch",
+		"/profile_songs", "/places_recent", "/posts/"
 	]
 
 	for tarjeta in tarjetas:
