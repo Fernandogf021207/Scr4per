@@ -1,0 +1,16 @@
+version: "3.9"
+
+services:
+  scr4per_api:
+    build: .
+    container_name: OSINT-API
+    ports:
+      - "8000:8000"
+    env_file:
+      - ./db/.env   # 👈 usa credenciales del archivo
+    networks:
+      - osint_net
+
+networks:
+  osint_net:
+    driver: bridge
