@@ -9,7 +9,8 @@ from src.scrapers.instagram.scraper import (
     obtener_datos_usuario_principal,
     scrap_seguidores,
     scrap_seguidos,
-    scrap_comentadores_instagram
+    scrap_comentadores_instagram,
+    scrap_reacciones_instagram
 )
 from src.utils.output import guardar_resultados
 
@@ -20,9 +21,10 @@ def mostrar_menu():
     print("1. Scrapear seguidores")
     print("2. Scrapear seguidos") 
     print("3. Scrapear comentadores")
-    print("4. Scrapear todo (seguidores, seguidos y comentadores)")
-    print("5. Salir")
-    return input("Selecciona una opción (1-5): ")
+    print("4. Scrapear likes (reacciones)")
+    print("5. Scrapear todo (seguidores, seguidos, comentadores y likes)")
+    print("6. Salir")
+    return input("Selecciona una opción (1-6): ")
 
 async def main_instagram():
     from src.scrapers.instagram.config import INSTAGRAM_CONFIG
@@ -44,11 +46,11 @@ async def main_instagram():
             while True:
                 opcion = mostrar_menu()
 
-                if opcion not in ['1', '2', '3', '4', '5']:
-                    print("❌ Opción inválida. Por favor, selecciona una opción válida (1-5).")
+                if opcion not in ['1', '2', '3', '4', '5', '6']:
+                    print("❌ Opción inválida. Por favor, selecciona una opción válida (1-6).")
                     continue
 
-                if opcion == '5':
+                if opcion == '6':
                     print("👋 Saliendo del programa...")
                     break
 
@@ -58,16 +60,17 @@ async def main_instagram():
                 seguidores = []
                 seguidos = []
                 comentadores = []
+                reacciones = []
 
-                if opcion in ['1', '4']:  # Scrapear seguidores
+                if opcion in ['1', '5']:  # Scrapear seguidores
                     print("\n🔍 Scrapeando seguidores...")
                     seguidores = await scrap_seguidores(page, url, username)
 
-                if opcion in ['2', '4']:  # Scrapear seguidos
+                if opcion in ['2', '5']:  # Scrapear seguidos
                     print("\n🔍 Scrapeando seguidos...")
                     seguidos = await scrap_seguidos(page, url, username)
 
-                if opcion in ['3', '4']:  # Scrapear comentadores
+                if opcion in ['3', '5']:  # Scrapear comentadores
                     print("\n🔍 Scrapeando comentadores...")
                     max_posts = 5
                     try:
@@ -79,8 +82,19 @@ async def main_instagram():
                     
                     comentadores = await scrap_comentadores_instagram(page, url, username, max_posts)
 
+                if opcion in ['4', '5']:  # Scrapear likes (reacciones)
+                    print("\n🔍 Scrapeando likes (reacciones)...")
+                    max_posts_likes = 5
+                    try:
+                        max_posts_input2 = input("¿Cuántos posts analizar para likes? [5]: ").strip()
+                        if max_posts_input2:
+                            max_posts_likes = int(max_posts_input2)
+                    except ValueError:
+                        max_posts_likes = 5
+                    reacciones = await scrap_reacciones_instagram(page, url, username, max_posts=max_posts_likes)
+
                 # Verificar si se encontraron datos
-                total_usuarios = len(seguidores) + len(seguidos) + len(comentadores)
+                total_usuarios = len(seguidores) + len(seguidos) + len(comentadores) + len(reacciones)
                 
                 if total_usuarios == 0:
                     print("⚠️ No se encontraron usuarios. Posibles causas:")
@@ -98,14 +112,18 @@ async def main_instagram():
                     print(f"  👥 Seguidos: {len(seguidos)}")
                 if comentadores:
                     print(f"  💬 Comentadores: {len(comentadores)}")
+                if reacciones:
+                    print(f"  ❤️ Reacciones (likes): {len(reacciones)}")
 
                 # Guardar resultados
+                # Nota: para guardar en Excel reutilizamos la hoja de Comentadores para likes
+                combinados_coment_y_likes = (comentadores or []) + (reacciones or [])
                 archivo_creado = guardar_resultados(
                     username, 
                     datos_usuario, 
                     seguidores if seguidores else [], 
                     seguidos if seguidos else [], 
-                    comentadores if comentadores else [], 
+                    combinados_coment_y_likes, 
                     platform='instagram'
                 )
                 print(f"\n🎉 ¡Scraping completado! {archivo_creado}")
