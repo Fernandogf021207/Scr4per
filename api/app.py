@@ -306,9 +306,19 @@ def _extract_fields(item: Dict[str, Any]) -> Dict[str, Optional[str]]:
         'photo_url': (item or {}).get('foto_usuario') or (item or {}).get('photo_url'),
     }
 
+def _to_spanish_rel(rel_type: str) -> str:
+    mapping = {
+        'follower': 'seguidor',
+        'following': 'seguido',
+        'friend': 'amigo',
+        'commented': 'comentó',
+        'reacted': 'reaccionó',
+    }
+    return mapping.get((rel_type or '').lower(), rel_type)
+
 def _build_related_from_db(cur, platform: str, owner_username: str) -> List[Dict[str, Any]]:
-    """Lee de la DB los perfiles relacionados (seguidores, seguidos, amigos, comentadores, reaccionadores)
-    y devuelve una lista con username, full_name, profile_url, photo_url y tipo de relacion.
+    """Lee desde DB y devuelve entradas separadas por tipo para el mismo usuario.
+    Un usuario puede aparecer múltiples veces (p.ej., seguidor, comentó, reaccionó).
     """
     schema = _schema(platform)
     # Owner id
@@ -321,12 +331,12 @@ def _build_related_from_db(cur, platform: str, owner_username: str) -> List[Dict
         return []
     owner_id = row["id"]
 
-    relacionados: Dict[str, Dict[str, Any]] = {}
+    relacionados: List[Dict[str, Any]] = []
 
     # Relaciones directas (followers/following/friend)
     cur.execute(
         f"""
-        SELECT p.username, p.full_name, p.profile_url, p.photo_url, r.rel_type
+        SELECT DISTINCT p.username, p.full_name, p.profile_url, p.photo_url, r.rel_type
         FROM {schema}.relationships r
         JOIN {schema}.profiles p ON p.id = r.related_profile_id
         WHERE r.owner_profile_id = %s
@@ -334,16 +344,15 @@ def _build_related_from_db(cur, platform: str, owner_username: str) -> List[Dict
         (owner_id,)
     )
     for r in cur.fetchall() or []:
-        uname = r["username"]
-        relacionados.setdefault(uname, {
-            "username": uname,
+        relacionados.append({
+            "username": r.get("username"),
             "full_name": r.get("full_name"),
             "profile_url": r.get("profile_url"),
             "photo_url": r.get("photo_url"),
-            "tipo de relacion": r.get("rel_type"),
+            "tipo de relacion": _to_spanish_rel(r.get("rel_type")),
         })
 
-    # Comentadores sobre posts del owner
+    # Comentadores sobre posts del owner (1 por username)
     try:
         cur.execute(
             f"""
@@ -356,20 +365,18 @@ def _build_related_from_db(cur, platform: str, owner_username: str) -> List[Dict
             (owner_id,)
         )
         for r in cur.fetchall() or []:
-            uname = r["username"]
-            if uname not in relacionados:
-                relacionados[uname] = {
-                    "username": uname,
-                    "full_name": r.get("full_name"),
-                    "profile_url": r.get("profile_url"),
-                    "photo_url": r.get("photo_url"),
-                    "tipo de relacion": 'comentó',
-                }
+            relacionados.append({
+                "username": r.get("username"),
+                "full_name": r.get("full_name"),
+                "profile_url": r.get("profile_url"),
+                "photo_url": r.get("photo_url"),
+                "tipo de relacion": 'comentó',
+            })
     except Exception:
         # Tabla puede no existir para algunas plataformas
         pass
 
-    # Reaccionadores sobre posts del owner
+    # Reaccionadores sobre posts del owner (1 por username)
     try:
         cur.execute(
             f"""
@@ -382,29 +389,17 @@ def _build_related_from_db(cur, platform: str, owner_username: str) -> List[Dict
             (owner_id,)
         )
         for r in cur.fetchall() or []:
-            uname = r["username"]
-            if uname not in relacionados:
-                relacionados[uname] = {
-                    "username": uname,
-                    "full_name": r.get("full_name"),
-                    "profile_url": r.get("profile_url"),
-                    "photo_url": r.get("photo_url"),
-                    "tipo de relacion": 'reaccionó',
-                }
+            relacionados.append({
+                "username": r.get("username"),
+                "full_name": r.get("full_name"),
+                "profile_url": r.get("profile_url"),
+                "photo_url": r.get("photo_url"),
+                "tipo de relacion": 'reaccionó',
+            })
     except Exception:
         pass
 
-    # Transform to list
-    return [
-        {
-            "username": uname,
-            "full_name": data.get("full_name"),
-            "profile_url": data.get("profile_url"),
-            "photo_url": data.get("photo_url"),
-            "tipo de relacion": data.get("tipo de relacion"),
-        }
-        for uname, data in relacionados.items()
-    ]
+    return relacionados
 
 @app.post("/scrape")
 async def scrape(req: ScrapeRequest):
@@ -472,7 +467,7 @@ async def scrape(req: ScrapeRequest):
                 followers = await x_scrap_followers(page, url, username)
                 following = await x_scrap_followed(page, url, username)
                 friends = []
-                commenters = await x_scrap_commenters(page, url, username)
+                commenters = await x_scrap_commenters(page, url, username, max_posts=max_photos)
                 reactions = []  # Not implemented for X in current codebase
             else:
                 raise HTTPException(status_code=400, detail="Unsupported platform")
@@ -570,21 +565,27 @@ async def scrape(req: ScrapeRequest):
                     with conn2.cursor() as cur2:
                         relacionados = _build_related_from_db(cur2, platform, perfil_obj['username'])
             except Exception:
-                # Fallback to in-memory minimal set if DB query fails
-                relacionados_map = {}
-                for u in followers_usernames:
-                    relacionados_map.setdefault(u, 'seguidor')
-                for u in following_usernames:
-                    relacionados_map.setdefault(u, 'seguido')
-                for u in commenters_usernames:
-                    relacionados_map.setdefault(u, 'comentó')
-                for u in friends_usernames:
-                    relacionados_map.setdefault(u, 'amigo')
-                for u in reactors_usernames:
-                    relacionados_map.setdefault(u, 'reaccionó')
-                relacionados = [
-                    {"username": uname, "tipo de relacion": tipo, "full_name": None, "profile_url": None, "photo_url": None}
-                    for uname, tipo in relacionados_map.items()
+                # Fallback a una lista con múltiples apariciones por tipo
+                relacionados = []
+                relacionados += [
+                    {"username": u, "tipo de relacion": 'seguidor', "full_name": None, "profile_url": None, "photo_url": None}
+                    for u in followers_usernames
+                ]
+                relacionados += [
+                    {"username": u, "tipo de relacion": 'seguido', "full_name": None, "profile_url": None, "photo_url": None}
+                    for u in following_usernames
+                ]
+                relacionados += [
+                    {"username": u, "tipo de relacion": 'comentó', "full_name": None, "profile_url": None, "photo_url": None}
+                    for u in commenters_usernames
+                ]
+                relacionados += [
+                    {"username": u, "tipo de relacion": 'amigo', "full_name": None, "profile_url": None, "photo_url": None}
+                    for u in friends_usernames
+                ]
+                relacionados += [
+                    {"username": u, "tipo de relacion": 'reaccionó', "full_name": None, "profile_url": None, "photo_url": None}
+                    for u in reactors_usernames
                 ]
 
             return {
