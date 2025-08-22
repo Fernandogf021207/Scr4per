@@ -291,13 +291,15 @@ async def scrap_seguidos(page, perfil_url, username):
         print(f"❌ Error extrayendo seguidos: {e}")
         return []
 
-async def scrap_comentadores(page, perfil_url, username):
-    """Scrapear usuarios que comentaron los posts del usuario"""
+async def scrap_comentadores(page, perfil_url, username, max_posts: int = 10):
+    """Scrapear usuarios que comentaron los posts del usuario.
+    max_posts limita la cantidad de posts del perfil objetivo a procesar.
+    """
     print("\n🔄 Navegando al perfil para extraer comentadores...")
     try:
         await page.goto(perfil_url)
         await page.wait_for_timeout(3000)
-        comentadores = await extraer_comentadores_x(page, max_posts=10)
+        comentadores = await extraer_comentadores_x(page, max_posts=max_posts)
         print(f"📊 Comentadores encontrados: {len(comentadores)}")
         return comentadores
     except Exception as e:

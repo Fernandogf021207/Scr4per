@@ -69,7 +69,14 @@ async def main_x():
                     seguidos = await scrap_seguidos(page, url, username)
                 
                 if opcion in ['3', '4']:
-                    comentadores = await scrap_comentadores(page, url, username)
+                    max_posts = 10
+                    try:
+                        max_posts_input = input("¿Cuántos posts analizar para comentarios? [10]: ").strip()
+                        if max_posts_input:
+                            max_posts = int(max_posts_input)
+                    except ValueError:
+                        max_posts = 10
+                    comentadores = await scrap_comentadores(page, url, username, max_posts=max_posts)
                 
                 if opcion != '4' and (
                     (opcion == '1' and not seguidores) or
