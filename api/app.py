@@ -7,6 +7,7 @@ from pydantic import BaseModel
 import psycopg2
 from psycopg2.extras import RealDictCursor
 from dotenv import load_dotenv
+from fastapi.middleware.cors import CORSMiddleware
 
 # Ensure project root is on sys.path so we can import src.*
 ROOT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
@@ -55,6 +56,23 @@ DB_CONFIG = {
 }
 
 app = FastAPI(title="Scr4per DB API", version="0.1.0")
+
+# CORS configuration to allow requests from the Vite frontend
+_default_frontend_origins = [
+    "http://localhost:3000",
+    "http://127.0.0.1:3000",
+]
+# Optional: extend via env FRONTEND_ORIGINS as comma-separated URLs
+_extra_origins = [o.strip() for o in (os.getenv("FRONTEND_ORIGINS") or "").split(",") if o.strip()]
+_allowed_origins = list({*(_default_frontend_origins + _extra_origins)})
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=_allowed_origins,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 # ---------- Schema routing ----------
 SCHEMA_BY_PLATFORM = {
