@@ -80,7 +80,7 @@ class RelationshipIn(BaseModel):
     platform: Literal['x', 'instagram', 'facebook']
     owner_username: str
     related_username: str
-    rel_type: Literal['follower', 'following', 'friend', 'commented', 'reacted']
+    rel_type: Literal['follower', 'following', 'followed', 'friend', 'commented', 'reacted']
 
 class PostIn(BaseModel):
     platform: Literal['x', 'instagram', 'facebook']
@@ -309,7 +309,8 @@ def _extract_fields(item: Dict[str, Any]) -> Dict[str, Optional[str]]:
 def _to_spanish_rel(rel_type: str) -> str:
     mapping = {
         'follower': 'seguidor',
-        'following': 'seguido',
+    'following': 'seguido',
+    'followed': 'seguido',
         'friend': 'amigo',
         'commented': 'comentó',
         'reacted': 'reaccionó',
