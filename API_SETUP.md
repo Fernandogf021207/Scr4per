@@ -44,7 +44,7 @@ POSTGRES_USER=scr4per_user
 POSTGRES_PASSWORD=your_password_here
 ```
 
-## 3) Crear y activar entorno virtual (opcional)
+## 3) Crear y activar entorno virtual
 
 Usando PowerShell en la carpeta del repo:
 
