@@ -50,7 +50,7 @@ async def obtener_nombre_usuario_x(page):
 async def procesar_usuarios_en_pagina(page, usuarios_dict):
     """Procesar usuarios visibles en la página actual"""
     from src.scrapers.x.config import X_CONFIG
-    from src.utils.common import limpiar_url
+    from src.utils.list_parser import build_user_item
     try:
         elementos_usuarios = []
         for selector in X_CONFIG["user_cell_selectors"]:
@@ -79,17 +79,16 @@ async def procesar_usuarios_en_pagina(page, usuarios_dict):
                     continue
                 
                 url_usuario = f"https://x.com{href}"
-                url_limpia = limpiar_url(url_usuario)
-                username_usuario = href.strip('/').split('/')[-1]
-                
-                if (username_usuario.isdigit() or 
-                    len(username_usuario) < 2 or 
-                    len(username_usuario) > 50 or
-                    username_usuario in ['followers', 'following', 'status']):
-                    continue
-                
-                if url_limpia in usuarios_dict:
-                    continue
+                # nombre visible
+                nombre_completo_usuario = None
+                for selector_nombre in X_CONFIG["nombre_usuario_selectors"]:
+                    nombre_element = await elemento.query_selector(selector_nombre)
+                    if nombre_element:
+                        texto = await nombre_element.inner_text()
+                        texto = (texto or '').strip()
+                        if (texto and not texto.startswith('@') and len(texto) > 1 and len(texto) <= 100):
+                            nombre_completo_usuario = texto
+                            break
                 
                 url_foto = ""
                 for selector_img in X_CONFIG["img_selectors"]:
@@ -99,27 +98,19 @@ async def procesar_usuarios_en_pagina(page, usuarios_dict):
                         if src and not src.startswith("data:") and "profile_images" in src:
                             url_foto = src
                             break
-                
-                nombre_completo_usuario = username_usuario
-                for selector_nombre in X_CONFIG["nombre_usuario_selectors"]:
-                    nombre_element = await elemento.query_selector(selector_nombre)
-                    if nombre_element:
-                        texto = await nombre_element.inner_text()
-                        texto = texto.strip()
-                        if (texto and 
-                            not texto.startswith('@') and 
-                            len(texto) > 1 and 
-                            len(texto) <= 100 and
-                            texto != username_usuario):
-                            nombre_completo_usuario = texto
-                            break
-                
-                usuarios_dict[url_limpia] = {
-                    "nombre_usuario": nombre_completo_usuario,
-                    "username_usuario": username_usuario,
-                    "link_usuario": url_limpia,
-                    "foto_usuario": url_foto
-                }
+                # Construir item normalizado y filtrar duplicados
+                item = build_user_item('x', url_usuario, nombre_completo_usuario, url_foto)
+                url_limpia = item['link_usuario']
+                username_usuario = item['username_usuario']
+
+                if (username_usuario.isdigit() or len(username_usuario) < 2 or len(username_usuario) > 50 or
+                    username_usuario in ['followers', 'following', 'status']):
+                    continue
+
+                if url_limpia in usuarios_dict:
+                    continue
+
+                usuarios_dict[url_limpia] = item
                 
                 usuarios_procesados += 1
 

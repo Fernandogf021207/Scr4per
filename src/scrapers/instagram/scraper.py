@@ -2,6 +2,10 @@ import asyncio
 import logging
 from urllib.parse import urljoin
 from src.utils.common import limpiar_url
+from src.utils.url import normalize_input_url
+from src.utils.dom import find_scroll_container, scroll_element, scroll_window
+from src.utils.list_parser import build_user_item
+from src.utils.url import normalize_post_url
 
 logger = logging.getLogger(__name__)
 
@@ -70,6 +74,7 @@ async def obtener_nombre_usuario_instagram(page):
 async def obtener_datos_usuario_principal(page, perfil_url):
     """Obtener datos del perfil principal"""
     print("Obteniendo datos del perfil principal de Instagram...")
+    perfil_url = normalize_input_url('instagram', perfil_url)
     await page.goto(perfil_url)
     await page.wait_for_timeout(5000)
     
@@ -95,31 +100,7 @@ async def extraer_usuarios_instagram(page, tipo_lista="seguidores", usuario_prin
     # Scroll robusto en el modal para cargar más usuarios
     print(f"📜 Haciendo scroll en modal de {tipo_lista}...")
 
-    # Intentar identificar el contenedor scrolleable real dentro del modal
-    container = None
-    try:
-        container = await page.evaluate_handle("""
-            () => {
-                const modal = document.querySelector('div[role="dialog"], div[aria-modal="true"]');
-                if (!modal) return null;
-                let best = modal; let maxScore = 0;
-                const all = modal.querySelectorAll('*');
-                for (const n of all) {
-                    const sh = n.scrollHeight || 0;
-                    const ch = n.clientHeight || 0;
-                    if (sh > ch + 40) {
-                        const st = getComputedStyle(n).overflowY;
-                        const score = (sh - ch);
-                        if ((st === 'auto' || st === 'scroll') && score > maxScore) {
-                            maxScore = score; best = n;
-                        }
-                    }
-                }
-                return best;
-            }
-        """)
-    except Exception:
-        container = None
+    container = await find_scroll_container(page)
 
     scroll_attempts = 0
     max_scrolls = 60
@@ -131,13 +112,9 @@ async def extraer_usuarios_instagram(page, tipo_lista="seguidores", usuario_prin
             current_user_count = len(usuarios_dict)
 
             if container:
-                try:
-                    await container.evaluate("el => el.scrollTop = Math.min(el.scrollTop + 800, el.scrollHeight)")
-                except Exception:
-                    # Fallback a scroll de ventana
-                    await page.evaluate("window.scrollBy(0, 600)")
+                await scroll_element(container, 800)
             else:
-                await page.evaluate("window.scrollBy(0, 600)")
+                await scroll_window(page, 600)
 
             await page.wait_for_timeout(1200)
 
@@ -227,48 +204,38 @@ async def procesar_usuarios_en_modal(page, usuarios_dict, usuario_principal, tip
         if not elementos_usuarios:
             print(f"  ⚠️ No se encontraron usuarios en este scroll")
             return
-        
+
         # Procesar cada elemento de usuario
         for elemento in elementos_usuarios:
             try:
                 enlace = await elemento.query_selector('a[role="link"]') or elemento
                 if not enlace:
                     continue
-                    
+
                 href = await enlace.get_attribute("href")
                 if not href or not href.startswith('/'):
                     continue
-                    
-                url_usuario = f"https://www.instagram.com{href}"
-                url_limpia = limpiar_url(url_usuario)
-                
-                username_usuario = href.strip('/').split('/')[-1]
-                
+
+                # Construir URL absoluta y normalizada con builder
+                url_usuario_abs = f"https://www.instagram.com{href}"
+                texto_elemento = await elemento.inner_text()
+                lineas = texto_elemento.strip().split('\n')
+                nombre_completo_usuario = lineas[0] if lineas and lineas[0] else None
+                img_element = await elemento.query_selector('img')
+                url_foto = await img_element.get_attribute("src") if img_element else ""
+                item = build_user_item('instagram', url_usuario_abs, nombre_completo_usuario, url_foto)
+                url_limpia = item['link_usuario']
+                username_usuario = item['username_usuario']
+
                 # Evitar procesar el usuario principal
                 if username_usuario == usuario_principal:
                     continue
-                
+
                 # Evitar duplicados
                 if url_limpia in usuarios_dict:
                     continue
-                
-                # Obtener imagen de perfil
-                img_element = await elemento.query_selector('img')
-                url_foto = ""
-                if img_element:
-                    url_foto = await img_element.get_attribute("src") or ""
-                
-                # Obtener nombre completo
-                texto_elemento = await elemento.inner_text()
-                lineas = texto_elemento.strip().split('\n')
-                nombre_completo_usuario = lineas[0] if lineas and lineas[0] else username_usuario
-                
-                usuarios_dict[url_limpia] = {
-                    "nombre_usuario": nombre_completo_usuario,
-                    "username_usuario": username_usuario,
-                    "link_usuario": url_limpia,
-                    "foto_usuario": url_foto if url_foto and not url_foto.startswith("data:") else ""
-                }
+
+                usuarios_dict[url_limpia] = item
 
             except Exception as e:
                 logger.warning(f"Error procesando usuario individual: {e}")
@@ -280,9 +247,10 @@ async def procesar_usuarios_en_modal(page, usuarios_dict, usuario_principal, tip
 async def navegar_a_lista_instagram(page, perfil_url, tipo_lista="followers"):
     """Navegar a la lista de seguidores o seguidos en Instagram"""
     try:
+        perfil_url = normalize_input_url('instagram', perfil_url)
         await page.goto(perfil_url)
         await page.wait_for_timeout(3000)
-        
+
         if tipo_lista == "followers":
             selectores_enlace = [
                 'a[href*="/followers/"]',
@@ -299,24 +267,24 @@ async def navegar_a_lista_instagram(page, perfil_url, tipo_lista="followers"):
                 'header a[href*="following"]'
             ]
             nombre_lista = "seguidos"
-        
+
         print(f"Buscando enlace de {nombre_lista}...")
-        
+
         enlace_lista = None
         for selector in selectores_enlace:
             enlace_lista = await page.query_selector(selector)
             if enlace_lista:
                 break
-        
+
         if not enlace_lista:
             print(f"❌ No se pudo encontrar el enlace de {nombre_lista}. ¿El perfil es público?")
             return False
-        
+
         print(f"Haciendo clic en {nombre_lista}...")
         await enlace_lista.click()
         await page.wait_for_timeout(3000)
         return True
-        
+
     except Exception as e:
         print(f"❌ Error navegando a {nombre_lista}: {e}")
         return False
@@ -462,26 +430,7 @@ async def _abrir_liked_by_y_extraer_usuarios(page, post_url: str):
         usuarios_dict = {}
 
         # identificar contenedor scrolleable
-        try:
-            container = await page.evaluate_handle("""
-                () => {
-                    const modal = document.querySelector('div[role="dialog"], div[aria-modal="true"]');
-                    if (!modal) return null;
-                    let best = modal; let maxScore = 0;
-                    const all = modal.querySelectorAll('*');
-                    for (const n of all) {
-                        const sh = n.scrollHeight || 0; const ch = n.clientHeight || 0;
-                        if (sh > ch + 40) {
-                            const st = getComputedStyle(n).overflowY;
-                            const score = (sh - ch);
-                            if ((st === 'auto' || st === 'scroll') && score > maxScore) { maxScore = score; best = n; }
-                        }
-                    }
-                    return best;
-                }
-            """)
-        except Exception:
-            container = None
+        container = await find_scroll_container(page)
 
         scrolls = 0
         no_new = 0
@@ -499,13 +448,10 @@ async def _abrir_liked_by_y_extraer_usuarios(page, post_url: str):
                 no_new = 0
 
             # Scroll
-            try:
-                if container:
-                    await container.evaluate('el => el.scrollTop = Math.min(el.scrollTop + 800, el.scrollHeight)')
-                else:
-                    await page.evaluate('window.scrollBy(0, 600)')
-            except Exception:
-                pass
+            if container:
+                await scroll_element(container, 800)
+            else:
+                await scroll_window(page, 600)
             await page.wait_for_timeout(900)
             scrolls += 1
 
@@ -513,7 +459,7 @@ async def _abrir_liked_by_y_extraer_usuarios(page, post_url: str):
         res = []
         for v in usuarios_dict.values():
             v = dict(v)
-            v["post_url"] = post_url
+            v["post_url"] = normalize_post_url('instagram', post_url)
             v["reaction_type"] = "like"
             res.append(v)
         return res
@@ -523,6 +469,7 @@ async def _abrir_liked_by_y_extraer_usuarios(page, post_url: str):
 async def scrap_reacciones_instagram(page, perfil_url: str, username: str, max_posts: int = 5):
     """Scrapea usuarios que dieron like (liked_by) en los últimos posts."""
     try:
+        perfil_url = normalize_input_url('instagram', perfil_url)
         await page.goto(perfil_url)
         await page.wait_for_timeout(1500)
         posts = await extraer_posts_del_perfil(page, max_posts=max_posts)
@@ -825,13 +772,9 @@ async def procesar_comentarios_en_modal(page, comentarios_dict, url_post):
                 except Exception as img_error:
                     logger.debug(f"No se pudo obtener imagen para {username} en modal: {img_error}")
                 
-                comentarios_dict[username] = {
-                    "nombre_usuario": nombre_mostrado or username,
-                    "username_usuario": username,
-                    "link_usuario": url_perfil,
-                    "foto_usuario": url_foto if url_foto and not url_foto.startswith("data:") else "",
-                    "post_url": url_post
-                }
+                item = build_user_item('instagram', url_perfil, nombre_mostrado or username, url_foto)
+                item['post_url'] = normalize_post_url('instagram', url_post)
+                comentarios_dict[username] = item
                 
             except Exception as e:
                 logger.warning(f"Error procesando comentario en modal: {e}")
@@ -930,13 +873,9 @@ async def procesar_comentarios_en_post(page, comentarios_dict, url_post):
                 except Exception as img_error:
                     logger.debug(f"No se pudo obtener imagen para {username}: {img_error}")
                 
-                comentarios_dict[username] = {
-                    "nombre_usuario": nombre_mostrado or username,
-                    "username_usuario": username,
-                    "link_usuario": url_perfil,
-                    "foto_usuario": url_foto if url_foto and not url_foto.startswith("data:") else "",
-                    "post_url": url_post
-                }
+                item = build_user_item('instagram', url_perfil, nombre_mostrado or username, url_foto)
+                item['post_url'] = normalize_post_url('instagram', url_post)
+                comentarios_dict[username] = item
                 
             except Exception as e:
                 logger.warning(f"Error procesando comentario individual: {e}")

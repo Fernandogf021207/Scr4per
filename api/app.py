@@ -41,6 +41,7 @@ from src.scrapers.x.scraper import (
     scrap_comentadores as x_scrap_commenters,
 )
 from src.scrapers.x.config import X_CONFIG
+from src.utils.url import normalize_input_url, extract_username_from_url, normalize_post_url
 
 # Load env variables from ./db/.env if present
 load_dotenv(dotenv_path=os.path.join(os.path.dirname(__file__), '..', 'db', '.env'))
@@ -221,7 +222,8 @@ def create_or_update_profile(p: ProfileIn):
     try:
         with get_conn() as conn:
             with conn.cursor() as cur:
-                pid = upsert_profile(cur, p.platform, p.username, p.full_name, p.profile_url, p.photo_url)
+                profile_url = normalize_input_url(p.platform, p.profile_url) if p.profile_url else None
+                pid = upsert_profile(cur, p.platform, p.username, p.full_name, profile_url, p.photo_url)
                 conn.commit()
                 schema = _schema(p.platform)
                 cur.execute(f"SELECT id, platform, username, full_name, profile_url, photo_url FROM {schema}.profiles WHERE id=%s", (pid,))
@@ -246,7 +248,8 @@ def create_post(p: PostIn):
     try:
         with get_conn() as conn:
             with conn.cursor() as cur:
-                post_id = add_post(cur, p.platform, p.owner_username, p.post_url)
+                post_url = normalize_post_url(p.platform, p.post_url)
+                post_id = add_post(cur, p.platform, p.owner_username, post_url)
                 conn.commit()
                 return {"inserted": bool(post_id), "post_id": post_id}
     except Exception as e:
@@ -258,7 +261,8 @@ def create_comment(c: CommentIn):
         with get_conn() as conn:
             with conn.cursor() as cur:
                 try:
-                    comment_id = add_comment(cur, c.platform, c.post_url, c.commenter_username)
+                    post_url = normalize_post_url(c.platform, c.post_url)
+                    comment_id = add_comment(cur, c.platform, post_url, c.commenter_username)
                 except ValueError as ve:
                     raise HTTPException(status_code=400, detail=str(ve))
                 conn.commit()
@@ -274,7 +278,8 @@ def create_reaction(r: ReactionIn):
         with get_conn() as conn:
             with conn.cursor() as cur:
                 try:
-                    reaction_id = add_reaction(cur, r.platform, r.post_url, r.reactor_username, r.reaction_type)
+                    post_url = normalize_post_url(r.platform, r.post_url)
+                    reaction_id = add_reaction(cur, r.platform, post_url, r.reactor_username, r.reaction_type)
                 except ValueError as ve:
                     raise HTTPException(status_code=400, detail=str(ve))
                 conn.commit()
@@ -405,7 +410,8 @@ def _build_related_from_db(cur, platform: str, owner_username: str) -> List[Dict
 @app.post("/scrape")
 async def scrape(req: ScrapeRequest):
     platform = req.platform
-    url = req.url
+    # Normalize incoming URL early
+    url = normalize_input_url(platform, req.url)
     max_photos = req.max_photos or 5
 
     storage_state = _storage_state_for(platform)
@@ -526,13 +532,13 @@ async def scrape(req: ScrapeRequest):
                     # Build set of photo/post URLs from commenters items
                     post_urls = set()
                     for item in commenters_items:
-                        purl = item.get('post_url')
+                        purl = normalize_post_url(platform, item.get('post_url')) if item.get('post_url') else None
                         if purl:
                             post_urls.add(purl)
                     for purl in post_urls:
                         add_post(cur, platform, perfil_obj['username'], purl)
                     for item in commenters_items:
-                        purl = item.get('post_url')
+                        purl = normalize_post_url(platform, item.get('post_url')) if item.get('post_url') else None
                         uname = _extract_username(item)
                         if purl and uname:
                             # Upsert commenter with details if available
@@ -546,7 +552,7 @@ async def scrape(req: ScrapeRequest):
                                 add_comment(cur, platform, purl, uname)
                     # Reactions (persist only)
                     for rx in reactions or []:
-                        purl = rx.get('post_url')
+                        purl = normalize_post_url(platform, rx.get('post_url')) if rx.get('post_url') else None
                         uname = _extract_username(rx)
                         if purl and uname:
                             try:

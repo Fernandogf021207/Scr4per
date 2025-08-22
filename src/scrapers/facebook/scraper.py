@@ -4,7 +4,10 @@ from typing import Dict, List
 
 from src.scrapers.facebook.config import FACEBOOK_CONFIG
 from src.scrapers.facebook.utils import normalize_profile_url, get_text, get_attr, absolute_url_keep_query
+from src.utils.dom import find_scroll_container, scroll_collect
+from src.utils.list_parser import build_user_item
 from src.utils.common import limpiar_url
+from src.utils.url import normalize_input_url, normalize_post_url
 
 logger = logging.getLogger(__name__)
 
@@ -12,6 +15,7 @@ logger = logging.getLogger(__name__)
 # ---------- Perfil principal ----------
 async def obtener_datos_usuario_facebook(page, perfil_url: str) -> dict:
 	"""Obtiene nombre, username (slug o id) y foto del perfil principal."""
+	perfil_url = normalize_input_url('facebook', perfil_url)
 	await page.goto(perfil_url)
 	await page.wait_for_timeout(3000)
 
@@ -74,6 +78,7 @@ async def navegar_a_lista(page, perfil_url: str, lista: str) -> bool:
 	}.get(lista, lista)
 
 	# Normalizar URL base del perfil
+	perfil_url = normalize_input_url('facebook', perfil_url)
 	base = perfil_url.rstrip('/')
 	target = f"{base}/{suffix}/"
 	try:
@@ -95,37 +100,22 @@ async def extraer_usuarios_listado(page, tipo_lista: str, usuario_principal: str
 	pause_ms = int(cfg.get('pause_ms', 1500))
 	max_no_new = int(cfg.get('max_no_new', 6))
 
-	scrolls = 0
-	no_new = 0
-	while scrolls < max_scrolls and no_new < max_no_new:
-		count_before = len(usuarios)
+	async def process_cb(page_, _container) -> int:
+		before = len(usuarios)
+		await procesar_tarjetas_usuario(page_, usuarios, usuario_principal)
+		return len(usuarios) - before
 
-		# Procesar usuarios visibles
-		await procesar_tarjetas_usuario(page, usuarios, usuario_principal)
-
-		# Verificar nuevos
-		if len(usuarios) > count_before:
-			no_new = 0
-		else:
-			no_new += 1
-
-		# Scroll al final
-		try:
-			await page.evaluate("window.scrollBy(0, window.innerHeight * 0.9)")
-		except Exception:
-			pass
-
-		await page.wait_for_timeout(pause_ms)
-		scrolls += 1
-
-		# Chequeo de final
-		try:
-			at_bottom = await page.evaluate("(window.innerHeight + window.pageYOffset) >= (document.body.scrollHeight - 800)")
-			if at_bottom and no_new >= 3:
-				break
-		except Exception:
-			pass
-
+	await scroll_collect(
+		page,
+		process_cb,
+		container=None,  # listado usa scroll de ventana
+		max_scrolls=max_scrolls,
+		pause_ms=pause_ms,
+		no_new_threshold=max_no_new,
+		bottom_margin=800,
+		pause_every=10,
+		pause_every_ms=5000,
+	)
 	return list(usuarios.values())
 
 
@@ -204,12 +194,7 @@ async def procesar_tarjetas_usuario(page, usuarios: Dict[str, dict], usuario_pri
 					# mantener id como username
 					pass
 
-				usuarios[url] = {
-					'nombre_usuario': nombre or username,
-					'username_usuario': username,
-					'link_usuario': url,
-					'foto_usuario': foto or '',
-				}
+				usuarios[url] = build_user_item('facebook', url, nombre or username, foto or '')
 			except Exception:
 				continue
 
@@ -312,12 +297,7 @@ async def extraer_amigos_facebook(page, usuario_principal: str) -> List[dict]:
 				continue
 
 			username = slug.split('?')[0]
-			amigos_dict[perfil_limpio] = {
-				"nombre_usuario": nombre,
-				"username_usuario": username,
-				"link_usuario": perfil_limpio,
-				"foto_usuario": imagen or "",
-			}
+			amigos_dict[perfil_limpio] = build_user_item('facebook', perfil_limpio, nombre, imagen or '')
 		except Exception:
 			continue
 
@@ -328,6 +308,7 @@ async def extraer_amigos_facebook(page, usuario_principal: str) -> List[dict]:
 async def navegar_a_fotos(page, perfil_url: str) -> bool:
 	"""Intentar varios sufijos comunes de fotos en perfiles."""
 	candidates = ["photos_by", "photos", "photos_all"]
+	perfil_url = normalize_input_url('facebook', perfil_url)
 	base = perfil_url.rstrip('/')
 	for suf in candidates:
 		try:
@@ -386,34 +367,36 @@ async def extraer_urls_fotos(page, max_fotos: int = 5) -> List[str]:
 async def procesar_usuarios_en_modal_reacciones(page, reacciones_dict: Dict[str, dict], photo_url: str):
 	"""Procesa el modal de reacciones (usuarios que reaccionaron)."""
 	try:
-		# Intentar encontrar usuarios dentro del modal
-		selectores = [
-			'div[role="dialog"] a[href^="/"][role="link"]',
-			'div[role="dialog"] a[role="link"]',
-		]
-		for sel in selectores:
-			try:
-				enlaces = await page.query_selector_all(sel)
-			except Exception:
-				enlaces = []
+		container = await find_scroll_container(page)
+
+		async def process_cb(page_, _container) -> int:
+			before = len(reacciones_dict)
+			selectores = [
+				'div[role="dialog"] a[href^="/"][role="link"]',
+				'div[role="dialog"] a[role="link"]',
+			]
+			enlaces = []
+			for sel in selectores:
+				try:
+					enlaces = await page_.query_selector_all(sel)
+				except Exception:
+					enlaces = []
+				if enlaces:
+					break
 			for e in enlaces:
 				try:
 					href = await get_attr(e, 'href')
 					if not href:
 						continue
 					url = normalize_profile_url(href)
-					# Filtrar rutas no-usuarios básicas
 					if any(x in url for x in ["/groups/", "/pages/", "/events/"]):
 						continue
 					username = url.split('facebook.com/')[-1].strip('/')
 					if username in ("", "photo.php"):
 						continue
-
 					if url in reacciones_dict:
 						continue
-
 					nombre = await get_text(e)
-					# Foto cercana
 					foto = ''
 					try:
 						cont = await e.evaluate_handle('el => el.closest("div")')
@@ -423,16 +406,21 @@ async def procesar_usuarios_en_modal_reacciones(page, reacciones_dict: Dict[str,
 							foto = src
 					except Exception:
 						pass
-
-					reacciones_dict[url] = {
-						"nombre_usuario": nombre or username,
-						"username_usuario": username,
-						"link_usuario": url,
-						"foto_usuario": foto or "",
-						"post_url": photo_url,
-					}
+					item = build_user_item('facebook', url, nombre or username, foto or '')
+					item['post_url'] = normalize_post_url('facebook', photo_url)
+					reacciones_dict[url] = item
 				except Exception:
 					continue
+			return len(reacciones_dict) - before
+
+		await scroll_collect(
+			page,
+			process_cb,
+			container=container,
+			max_scrolls=50,
+			pause_ms=900,
+			no_new_threshold=6,
+		)
 	except Exception:
 		return
 
@@ -611,13 +599,9 @@ async def procesar_comentarios_en_modal_foto(page, comentarios_dict: Dict[str, d
 				except Exception:
 					pass
 
-				comentarios_dict[url] = {
-					"nombre_usuario": nombre or username,
-					"username_usuario": username,
-					"link_usuario": url,
-					"foto_usuario": foto or "",
-					"post_url": photo_url,
-				}
+				item = build_user_item('facebook', url, nombre or username, foto or '')
+				item['post_url'] = normalize_post_url('facebook', photo_url)
+				comentarios_dict[url] = item
 			except Exception:
 				continue
 	except Exception:

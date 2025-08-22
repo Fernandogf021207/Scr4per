@@ -1,7 +1,11 @@
 import asyncio
 from urllib.parse import urljoin
 from src.utils.common import limpiar_url
+from src.utils.url import normalize_input_url
+from src.utils.dom import scroll_window
 from src.utils.output import guardar_resultados
+from src.utils.list_parser import build_user_item
+from src.utils.url import normalize_post_url
 from src.scrapers.x.utils import (
     obtener_foto_perfil_x,
     obtener_nombre_usuario_x,
@@ -27,14 +31,7 @@ async def extraer_usuarios_lista(page, tipo_lista="seguidores"):
         try:
             current_user_count = len(usuarios_dict)
             
-            await page.evaluate("""
-                () => {
-                    const scrollHeight = document.body.scrollHeight;
-                    const currentScroll = window.pageYOffset;
-                    const clientHeight = window.innerHeight;
-                    window.scrollBy(0, clientHeight * 0.8);
-                }
-            """)
+            await scroll_window(page, 0)  # helper applies a sensible default
             
             await page.wait_for_timeout(2000)
             nuevos_usuarios_encontrados = await procesar_usuarios_en_pagina(page, usuarios_dict)
@@ -52,11 +49,9 @@ async def extraer_usuarios_lista(page, tipo_lista="seguidores"):
                 print(f"  🔄 Pausa para evitar rate limiting... ({len(usuarios_dict)} usuarios hasta ahora)")
                 await page.wait_for_timeout(5000)
             
-            is_at_bottom = await page.evaluate("""
-                () => {
-                    return (window.innerHeight + window.pageYOffset) >= document.body.scrollHeight - 1000;
-                }
-            """)
+            is_at_bottom = await page.evaluate(
+                "() => (window.innerHeight + window.pageYOffset) >= (document.body.scrollHeight - 1000)"
+            )
             
             if is_at_bottom and no_new_content_count >= 3:
                 print(f"  ✅ Llegamos al final de la lista de {tipo_lista}")
@@ -95,7 +90,7 @@ async def extraer_comentadores_x(page, max_posts=10):
                     print("  ✅ No más posts encontrados")
                     break
                 print(f"  ⏳ No se encontraron posts en scroll {scroll_attempts + 1}")
-                await page.evaluate("window.scrollBy(0, window.innerHeight * 0.8)")
+                await scroll_window(page, 0)
                 await page.wait_for_timeout(2000)
                 scroll_attempts += 1
                 continue
@@ -120,7 +115,7 @@ async def extraer_comentadores_x(page, max_posts=10):
                     await page.wait_for_timeout(5000)
                     
                     for _ in range(3):
-                        await page.evaluate("window.scrollBy(0, window.innerHeight * 0.8)")
+                        await scroll_window(page, 0)
                         await page.wait_for_timeout(2000)
                     
                     comment_selectors = [
@@ -148,8 +143,10 @@ async def extraer_comentadores_x(page, max_posts=10):
                                         continue
                                         
                                     url_usuario = f"https://x.com{href}"
-                                    url_limpia = limpiar_url(url_usuario)
-                                    username_usuario = href.strip('/').split('/')[-1]
+                                    # Build normalized item
+                                    item = build_user_item('x', url_usuario, None, None)
+                                    url_limpia = item['link_usuario']
+                                    username_usuario = item['username_usuario']
                                     
                                     if (username_usuario.isdigit() or 
                                         len(username_usuario) < 2 or 
@@ -190,13 +187,10 @@ async def extraer_comentadores_x(page, max_posts=10):
                                                 nombre_completo = texto
                                                 break
                                     
-                                    comentadores_dict[url_limpia] = {
-                                        "nombre_usuario": nombre_completo,
-                                        "username_usuario": username_usuario,
-                                        "link_usuario": url_limpia,
-                                        "foto_usuario": url_foto,
-                                        "post_url": post_url
-                                    }
+                                    # finalize item
+                                    item = build_user_item('x', url_usuario, nombre_completo, url_foto)
+                                    item['post_url'] = normalize_post_url('x', post_url)
+                                    comentadores_dict[url_limpia] = item
                                     logger.info(f"Comentador añadido: @{username_usuario}")
                                     
                                 except Exception as e:
@@ -220,7 +214,7 @@ async def extraer_comentadores_x(page, max_posts=10):
                     logger.warning(f"Error procesando post {post_index + 1}: {e}")
                     continue
             
-            await page.evaluate("window.scrollBy(0, window.innerHeight * 0.8)")
+            await scroll_window(page, 0)
             await page.wait_for_timeout(2000)
             scroll_attempts += 1
             
@@ -267,6 +261,7 @@ async def scrap_seguidores(page, perfil_url, username):
     """Scrapear seguidores del usuario"""
     print("\n🔄 Navegando a seguidores...")
     try:
+        perfil_url = normalize_input_url('x', perfil_url)
         followers_url = f"{perfil_url.rstrip('/')}/followers"
         await page.goto(followers_url)
         await page.wait_for_timeout(3000)
@@ -281,6 +276,7 @@ async def scrap_seguidos(page, perfil_url, username):
     """Scrapear usuarios seguidos por el usuario"""
     print("\n🔄 Navegando a seguidos...")
     try:
+        perfil_url = normalize_input_url('x', perfil_url)
         following_url = f"{perfil_url.rstrip('/')}/following"
         await page.goto(following_url)
         await page.wait_for_timeout(3000)
@@ -297,6 +293,7 @@ async def scrap_comentadores(page, perfil_url, username, max_posts: int = 10):
     """
     print("\n🔄 Navegando al perfil para extraer comentadores...")
     try:
+        perfil_url = normalize_input_url('x', perfil_url)
         await page.goto(perfil_url)
         await page.wait_for_timeout(3000)
         comentadores = await extraer_comentadores_x(page, max_posts=max_posts)

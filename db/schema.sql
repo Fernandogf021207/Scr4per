@@ -29,7 +29,16 @@ BEGIN
         CREATE TYPE red_facebook.platform_enum AS ENUM ('facebook');
     END IF;
     IF to_regtype('red_facebook.rel_type_enum') IS NULL THEN
-        CREATE TYPE red_facebook.rel_type_enum AS ENUM ('follower', 'following');
+        CREATE TYPE red_facebook.rel_type_enum AS ENUM ('follower', 'following', 'friend');
+    END IF;
+    -- Ensure 'friend' exists in rel_type_enum if type already existed
+    IF to_regtype('red_facebook.rel_type_enum') IS NOT NULL THEN
+        BEGIN
+            ALTER TYPE red_facebook.rel_type_enum ADD VALUE IF NOT EXISTS 'friend';
+        EXCEPTION WHEN duplicate_object THEN
+            -- ignore
+            NULL;
+        END;
     END IF;
 END
 $$;
@@ -86,6 +95,16 @@ CREATE INDEX IF NOT EXISTS idx_x_profiles_platform_username ON red_x.profiles(pl
 CREATE INDEX IF NOT EXISTS idx_x_relationships_owner_type ON red_x.relationships(owner_profile_id, rel_type);
 CREATE INDEX IF NOT EXISTS idx_x_posts_owner ON red_x.posts(owner_profile_id);
 
+-- Reactions (optional on X, created for parity)
+CREATE TABLE IF NOT EXISTS red_x.reactions (
+    id                      BIGSERIAL PRIMARY KEY,
+    post_id                 BIGINT NOT NULL REFERENCES red_x.posts(id) ON DELETE CASCADE,
+    reactor_profile_id      BIGINT NOT NULL REFERENCES red_x.profiles(id) ON DELETE CASCADE,
+    reaction_type           TEXT,
+    first_seen_at           TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CONSTRAINT uq_reactions_x UNIQUE (post_id, reactor_profile_id)
+);
+
 -- ======================== SCHEMA red_instagram ========================
 -- Profiles
 CREATE TABLE IF NOT EXISTS red_instagram.profiles (
@@ -138,6 +157,16 @@ CREATE INDEX IF NOT EXISTS idx_ig_profiles_platform_username ON red_instagram.pr
 CREATE INDEX IF NOT EXISTS idx_ig_relationships_owner_type ON red_instagram.relationships(owner_profile_id, rel_type);
 CREATE INDEX IF NOT EXISTS idx_ig_posts_owner ON red_instagram.posts(owner_profile_id);
 
+-- Reactions (liked_by)
+CREATE TABLE IF NOT EXISTS red_instagram.reactions (
+    id                      BIGSERIAL PRIMARY KEY,
+    post_id                 BIGINT NOT NULL REFERENCES red_instagram.posts(id) ON DELETE CASCADE,
+    reactor_profile_id      BIGINT NOT NULL REFERENCES red_instagram.profiles(id) ON DELETE CASCADE,
+    reaction_type           TEXT,
+    first_seen_at           TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CONSTRAINT uq_reactions_ig UNIQUE (post_id, reactor_profile_id)
+);
+
 -- ======================== SCHEMA red_facebook ========================
 -- Profiles
 CREATE TABLE IF NOT EXISTS red_facebook.profiles (
@@ -189,3 +218,13 @@ CREATE TABLE IF NOT EXISTS red_facebook.comments (
 CREATE INDEX IF NOT EXISTS idx_fb_profiles_platform_username ON red_facebook.profiles(platform, username);
 CREATE INDEX IF NOT EXISTS idx_fb_relationships_owner_type ON red_facebook.relationships(owner_profile_id, rel_type);
 CREATE INDEX IF NOT EXISTS idx_fb_posts_owner ON red_facebook.posts(owner_profile_id);
+
+-- Reactions (Facebook supports detailed types)
+CREATE TABLE IF NOT EXISTS red_facebook.reactions (
+    id                      BIGSERIAL PRIMARY KEY,
+    post_id                 BIGINT NOT NULL REFERENCES red_facebook.posts(id) ON DELETE CASCADE,
+    reactor_profile_id      BIGINT NOT NULL REFERENCES red_facebook.profiles(id) ON DELETE CASCADE,
+    reaction_type           TEXT,
+    first_seen_at           TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CONSTRAINT uq_reactions_fb UNIQUE (post_id, reactor_profile_id)
+);
