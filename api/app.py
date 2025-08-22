@@ -3,11 +3,14 @@ import sys
 from typing import Optional, Literal, List, Dict, Any
 
 from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel
+from fastapi.responses import StreamingResponse
+from pydantic import BaseModel, Field
 import psycopg2
 from psycopg2.extras import RealDictCursor
 from dotenv import load_dotenv
 from fastapi.middleware.cors import CORSMiddleware
+from io import BytesIO
+import pandas as pd
 
 # Ensure project root is on sys.path so we can import src.*
 ROOT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
@@ -121,6 +124,14 @@ class ScrapeRequest(BaseModel):
     url: str
     platform: Literal['x', 'instagram', 'facebook']
     max_photos: Optional[int] = 5
+
+# Input model for export endpoint using Spanish keys from /scrape output
+class ExportInput(BaseModel):
+    perfil_objetivo: Dict[str, Any] = Field(alias="Perfil objetivo")
+    perfiles_relacionados: List[Dict[str, Any]] = Field(alias="Perfiles relacionados")
+
+    class Config:
+        allow_population_by_field_name = True
 
 # ---------- DB helpers ----------
 
@@ -620,3 +631,61 @@ async def scrape(req: ScrapeRequest):
         finally:
             await context.close()
             await browser.close()
+
+
+@app.post("/export")
+def export_to_excel(payload: ExportInput):
+    """Exporta a Excel con 3 columnas: Perfil objetivo, Tipo de relacion, Perfiles asociados.
+    Espera el JSON que devuelve /scrape o equivalente.
+    """
+    try:
+        objetivo = payload.perfil_objetivo or {}
+        relacionados = payload.perfiles_relacionados or []
+
+        objetivo_str = None
+        # Prefer username; fallback to full_name or profile_url
+        for key in ["username", "nombre_usuario", "nombre_completo", "full_name", "profile_url", "url_usuario"]:
+            if objetivo.get(key):
+                objetivo_str = str(objetivo.get(key))
+                break
+        objetivo_str = objetivo_str or ""
+
+        rows = []
+        for item in relacionados:
+            tipo = item.get("tipo de relacion") or item.get("tipo") or ""
+            # Build a compact representation for the related profile
+            rel_username = item.get("username") or item.get("username_usuario") or ""
+            rel_name = item.get("full_name") or item.get("nombre_usuario") or ""
+            rel_url = item.get("profile_url") or item.get("link_usuario") or ""
+
+            if rel_username:
+                asociado = rel_username
+                # Add name in parentheses if available
+                if rel_name and rel_name != rel_username:
+                    asociado = f"{rel_username} ({rel_name})"
+            elif rel_name:
+                asociado = rel_name
+            else:
+                asociado = rel_url or ""
+
+            rows.append({
+                "Perfil objetivo": objetivo_str,
+                "Tipo de relacion": tipo,
+                "Perfiles asociados": asociado,
+            })
+
+        # Create DataFrame and Excel in-memory
+        df = pd.DataFrame(rows, columns=["Perfil objetivo", "Tipo de relacion", "Perfiles asociados"])
+        output = BytesIO()
+        with pd.ExcelWriter(output, engine="openpyxl") as writer:
+            df.to_excel(writer, index=False, sheet_name="export")
+        output.seek(0)
+
+        filename = f"export_{objetivo_str or 'perfil'}.xlsx"
+        return StreamingResponse(
+            output,
+            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            headers={"Content-Disposition": f"attachment; filename={filename}"},
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
