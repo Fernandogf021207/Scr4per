@@ -7,10 +7,12 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 import psycopg2
 from psycopg2.extras import RealDictCursor
+from psycopg2.extras import Json
 from dotenv import load_dotenv
 from fastapi.middleware.cors import CORSMiddleware
 from io import BytesIO
 import pandas as pd
+from pydantic import BaseModel
 
 # Ensure project root is on sys.path so we can import src.*
 ROOT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
@@ -125,7 +127,12 @@ class ScrapeRequest(BaseModel):
     platform: Literal['x', 'instagram', 'facebook']
     max_photos: Optional[int] = 5
 
-# Input model for export endpoint using Spanish keys from /scrape output
+class GraphSessionIn(BaseModel):
+    platform: Literal['x','instagram','facebook']
+    owner_username: str
+    elements: Dict[str, Any]  # lo que te da cy.json() o elements().jsons()
+    style: Optional[Dict[str,Any]] = None
+    layout: Optional[Dict[str,Any]] = None# Input model for export endpoint using Spanish keys from /scrape output
 class ExportInput(BaseModel):
     perfil_objetivo: Dict[str, Any] = Field(alias="Perfil objetivo")
     perfiles_relacionados: List[Dict[str, Any]] = Field(alias="Perfiles relacionados")
@@ -234,6 +241,40 @@ def add_reaction(cur, platform: str, post_url: str, reactor_username: str, react
     return row["id"] if row else None
 
 # ---------- Routes ----------
+@app.get("/graph-session/{platform}/{owner_username}")
+def load_graph_session(platform: Literal['x','instagram','facebook'], owner_username: str):
+    try:
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute("""
+                  SELECT elements, style, layout, updated_at
+                  FROM graph_sessions
+                  WHERE platform=%s AND owner_username=%s
+                """,(platform, owner_username))
+                row = cur.fetchone()
+                return row or {"elements": None}
+    except Exception as e:
+        raise HTTPException(500, detail=str(e))
+
+@app.post("/graph-session")
+def save_graph_session(body: GraphSessionIn):
+    try:
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute("""
+                  INSERT INTO graph_sessions(platform, owner_username, elements, style, layout, updated_at)
+                  VALUES (%s,%s,%s,%s,%s,NOW())
+                  ON CONFLICT (platform, owner_username) DO UPDATE
+                  SET elements=EXCLUDED.elements,
+                      style=EXCLUDED.style,
+                      layout=EXCLUDED.layout,
+                      updated_at=NOW()
+                  RETURNING platform, owner_username, updated_at;
+                """, (body.platform, body.owner_username, Json(body.elements), Json(body.style), Json(body.layout)))
+                conn.commit()
+                return cur.fetchone()
+    except Exception as e:
+        raise HTTPException(500, detail=str(e))
 
 @app.get("/health")
 def health():
@@ -435,6 +476,35 @@ def _build_related_from_db(cur, platform: str, owner_username: str) -> List[Dict
         pass
 
     return relacionados
+# api/app.py (añade esto, reutilizando _build_related_from_db y _schema)
+from fastapi import Path
+
+@app.get("/related/{platform}/{username}")
+def get_related(
+    platform: Literal['x','instagram','facebook'] = Path(...),
+    username: str = Path(...)
+):
+    try:
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                relacionados = _build_related_from_db(cur, platform, username)
+                # Opcional: incluir también el perfil objetivo
+                schema = _schema(platform)
+                cur.execute(
+                    f"SELECT platform, username, full_name, profile_url, photo_url "
+                    f"FROM {schema}.profiles WHERE platform=%s AND username=%s",
+                    (platform, username)
+                )
+                objetivo = cur.fetchone() or {
+                    "platform": platform, "username": username
+                }
+        return {
+            "Perfil objetivo": objetivo,
+            "Perfiles relacionados": relacionados
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
 
 @app.post("/scrape")
 async def scrape(req: ScrapeRequest):
