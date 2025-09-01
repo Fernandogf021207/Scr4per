@@ -6,6 +6,8 @@ from src.utils.url import normalize_input_url
 from src.utils.dom import find_scroll_container, scroll_element, scroll_window
 from src.utils.list_parser import build_user_item
 from src.utils.url import normalize_post_url
+import os
+import httpx
 
 logger = logging.getLogger(__name__)
 

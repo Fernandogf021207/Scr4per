@@ -1,18 +1,23 @@
 import os
 import sys
 from typing import Optional, Literal, List, Dict, Any
+from datetime import datetime
+import asyncio
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import StreamingResponse
+import io
 from pydantic import BaseModel, Field
 import psycopg2
 from psycopg2.extras import RealDictCursor
 from psycopg2.extras import Json
 from dotenv import load_dotenv
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 from io import BytesIO
 import pandas as pd
 from pydantic import BaseModel
+import httpx
 
 # Ensure project root is on sys.path so we can import src.*
 ROOT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
@@ -48,6 +53,7 @@ from src.scrapers.x.scraper import (
 )
 from src.scrapers.x.config import X_CONFIG
 from src.utils.url import normalize_input_url, extract_username_from_url, normalize_post_url
+from src.utils.images import local_or_proxy_photo_url
 
 # Load env variables from ./db/.env if present
 load_dotenv(dotenv_path=os.path.join(os.path.dirname(__file__), '..', 'db', '.env'))
@@ -79,6 +85,16 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Serve local storage (images) statically if folder exists
+_storage_candidates = [
+    os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'data', 'storage')),
+    os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'storage')),
+]
+for _cand in _storage_candidates:
+    if os.path.isdir(_cand):
+        app.mount("/storage", StaticFiles(directory=_cand), name="storage")
+        break
+
 # ---------- Schema routing ----------
 SCHEMA_BY_PLATFORM = {
     'x': 'red_x',
@@ -105,6 +121,7 @@ class RelationshipIn(BaseModel):
     owner_username: str
     related_username: str
     rel_type: Literal['follower', 'following', 'followed', 'friend', 'commented', 'reacted']
+    updated_at: Optional[datetime] = None
 
 class PostIn(BaseModel):
     platform: Literal['x', 'instagram', 'facebook']
@@ -133,6 +150,7 @@ class GraphSessionIn(BaseModel):
     elements: Dict[str, Any]  # lo que te da cy.json() o elements().jsons()
     style: Optional[Dict[str,Any]] = None
     layout: Optional[Dict[str,Any]] = None# Input model for export endpoint using Spanish keys from /scrape output
+
 class ExportInput(BaseModel):
     perfil_objetivo: Dict[str, Any] = Field(alias="Perfil objetivo")
     perfiles_relacionados: List[Dict[str, Any]] = Field(alias="Perfiles relacionados")
@@ -241,6 +259,30 @@ def add_reaction(cur, platform: str, post_url: str, reactor_username: str, react
     return row["id"] if row else None
 
 # ---------- Routes ----------
+@app.get("/proxy-image")
+async def proxy_image(url: str = Query(..., description="URL de la imagen externa")):
+    """
+    Endpoint que hace proxy de una imagen externa para evitar problemas de CORS.
+    - Recibe: ?url=<URL completa de la imagen>
+    - Devuelve: imagen en streaming
+    """
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.get(url)
+            resp.raise_for_status()  # lanza excepción si status != 200
+            
+            # Validar content-type
+            content_type = resp.headers.get("content-type", "")
+            if not content_type.startswith("image/"):
+                raise HTTPException(status_code=400, detail="La URL no apunta a una imagen válida")
+            
+            # Convertir contenido a BytesIO
+            image_bytes = io.BytesIO(resp.content)
+            return StreamingResponse(image_bytes, media_type=content_type)
+    
+    except httpx.HTTPError as e:
+        raise HTTPException(status_code=500, detail=f"Error al obtener la imagen: {str(e)}")
+    
 @app.get("/graph-session/{platform}/{owner_username}")
 def load_graph_session(platform: Literal['x','instagram','facebook'], owner_username: str):
     try:
@@ -426,6 +468,7 @@ def _build_related_from_db(cur, platform: str, owner_username: str) -> List[Dict
             "profile_url": r.get("profile_url"),
             "photo_url": r.get("photo_url"),
             "tipo de relacion": _to_spanish_rel(r.get("rel_type")),
+            "updated_at": r.get("updated_at"),
         })
 
     # Comentadores sobre posts del owner (1 por username)
@@ -447,6 +490,7 @@ def _build_related_from_db(cur, platform: str, owner_username: str) -> List[Dict
                 "profile_url": r.get("profile_url"),
                 "photo_url": r.get("photo_url"),
                 "tipo de relacion": 'comentó',
+                "updated_at": r.get("updated_at"),
             })
     except Exception:
         # Tabla puede no existir para algunas plataformas
@@ -471,6 +515,7 @@ def _build_related_from_db(cur, platform: str, owner_username: str) -> List[Dict
                 "profile_url": r.get("profile_url"),
                 "photo_url": r.get("photo_url"),
                 "tipo de relacion": 'reaccionó',
+                "updated_at": r.get("updated_at"),
             })
     except Exception:
         pass
@@ -491,7 +536,7 @@ def get_related(
                 # Opcional: incluir también el perfil objetivo
                 schema = _schema(platform)
                 cur.execute(
-                    f"SELECT platform, username, full_name, profile_url, photo_url "
+                    f"SELECT platform, username, full_name, profile_url, photo_url, updated_at "
                     f"FROM {schema}.profiles WHERE platform=%s AND username=%s",
                     (platform, username)
                 )
@@ -591,8 +636,24 @@ async def scrape(req: ScrapeRequest):
             # Persist into DB
             with get_conn() as conn:
                 with conn.cursor() as cur:
-                    # Ensure target profile exists
-                    upsert_profile(cur, platform, perfil_obj['username'], perfil_obj.get('full_name'), perfil_obj.get('profile_url'), perfil_obj.get('photo_url'))
+                    # Ensure target profile exists (store local photo path)
+                    try:
+                        if perfil_obj.get('photo_url'):
+                            # Skip if already local
+                            if not str(perfil_obj['photo_url']).startswith('/storage/'):
+                                perfil_obj['photo_url'] = await local_or_proxy_photo_url(
+                                    perfil_obj.get('photo_url'), perfil_obj.get('username'), mode='download', page=page, on_failure='empty'
+                                )
+                    except Exception:
+                        perfil_obj['photo_url'] = ""
+                    upsert_profile(
+                        cur,
+                        platform,
+                        perfil_obj['username'],
+                        perfil_obj.get('full_name'),
+                        perfil_obj.get('profile_url'),
+                        perfil_obj.get('photo_url'),
+                    )
                     # Index scraped items by username for details
                     by_username: Dict[str, Dict[str, Any]] = {}
                     for lst in [followers or [], following or [], friends or [], commenters or [], reactions or []]:
@@ -615,17 +676,38 @@ async def scrape(req: ScrapeRequest):
                     # Relationships: upsert profile with details first, then add relationship
                     for u in followers_usernames:
                         f = by_username.get(u, {})
-                        upsert_profile(cur, platform, u, f.get('full_name'), f.get('profile_url'), f.get('photo_url'))
+                        photo_local = f.get('photo_url')
+                        if photo_local:
+                            try:
+                                if not str(photo_local).startswith('/storage/'):
+                                    photo_local = await local_or_proxy_photo_url(photo_local, u, mode='download', page=page, on_failure='empty')
+                            except Exception:
+                                photo_local = ""
+                        upsert_profile(cur, platform, u, f.get('full_name'), f.get('profile_url'), photo_local)
                         add_relationship(cur, platform, perfil_obj['username'], u, 'follower')
                     for u in following_usernames:
                         f = by_username.get(u, {})
-                        upsert_profile(cur, platform, u, f.get('full_name'), f.get('profile_url'), f.get('photo_url'))
+                        photo_local = f.get('photo_url')
+                        if photo_local:
+                            try:
+                                if not str(photo_local).startswith('/storage/'):
+                                    photo_local = await local_or_proxy_photo_url(photo_local, u, mode='download', page=page, on_failure='empty')
+                            except Exception:
+                                photo_local = ""
+                        upsert_profile(cur, platform, u, f.get('full_name'), f.get('profile_url'), photo_local)
                         add_relationship(cur, platform, perfil_obj['username'], u, 'following')
                     # Friends only FB
                     if platform == 'facebook':
                         for u in friends_usernames:
                             f = by_username.get(u, {})
-                            upsert_profile(cur, platform, u, f.get('full_name'), f.get('profile_url'), f.get('photo_url'))
+                            photo_local = f.get('photo_url')
+                            if photo_local:
+                                try:
+                                    if not str(photo_local).startswith('/storage/'):
+                                        photo_local = await local_or_proxy_photo_url(photo_local, u, mode='download', page=page, on_failure='empty')
+                                except Exception:
+                                    photo_local = ""
+                            upsert_profile(cur, platform, u, f.get('full_name'), f.get('profile_url'), photo_local)
                             add_relationship(cur, platform, perfil_obj['username'], u, 'friend')
                     # Posts + comments
                     # Build set of photo/post URLs from commenters items
@@ -640,9 +722,16 @@ async def scrape(req: ScrapeRequest):
                         purl = normalize_post_url(platform, item.get('post_url')) if item.get('post_url') else None
                         uname = _extract_username(item)
                         if purl and uname:
-                            # Upsert commenter with details if available
+                            # Upsert commenter with details if available (store local photo)
                             f = _extract_fields(item)
-                            upsert_profile(cur, platform, uname, f.get('full_name'), f.get('profile_url'), f.get('photo_url'))
+                            photo_local = f.get('photo_url')
+                            if photo_local:
+                                try:
+                                    if not str(photo_local).startswith('/storage/'):
+                                        photo_local = await local_or_proxy_photo_url(photo_local, uname, mode='download', page=page, on_failure='empty')
+                                except Exception:
+                                    photo_local = ""
+                            upsert_profile(cur, platform, uname, f.get('full_name'), f.get('profile_url'), photo_local)
                             try:
                                 add_comment(cur, platform, purl, uname)
                             except ValueError:
@@ -655,9 +744,16 @@ async def scrape(req: ScrapeRequest):
                         uname = _extract_username(rx)
                         if purl and uname:
                             try:
-                                # Upsert reactor with details
+                                # Upsert reactor with details (store local photo)
                                 f = _extract_fields(rx)
-                                upsert_profile(cur, platform, uname, f.get('full_name'), f.get('profile_url'), f.get('photo_url'))
+                                photo_local = f.get('photo_url')
+                                if photo_local:
+                                    try:
+                                        if not str(photo_local).startswith('/storage/'):
+                                            photo_local = await local_or_proxy_photo_url(photo_local, uname, mode='download', page=page, on_failure='empty')
+                                    except Exception:
+                                        photo_local = ""
+                                upsert_profile(cur, platform, uname, f.get('full_name'), f.get('profile_url'), photo_local)
                                 add_post(cur, platform, perfil_obj['username'], purl)
                                 add_reaction(cur, platform, purl, uname, rx.get('reaction_type'))
                             except ValueError:
@@ -695,8 +791,26 @@ async def scrape(req: ScrapeRequest):
                 ]
 
             return {
-                "Perfil objetivo": perfil_obj,
-                "Perfiles relacionados": relacionados,
+                # Before returning, convert photo URLs to local stored paths for frontend
+                "Perfil objetivo": {
+                    **perfil_obj,
+                    "photo_url": (
+                        await local_or_proxy_photo_url(
+                            perfil_obj.get("photo_url"), perfil_obj.get("username"), mode="download", page=page, on_failure='empty'
+                        ) if (perfil_obj.get("photo_url") and not str(perfil_obj.get("photo_url")).startswith('/storage/')) else perfil_obj.get("photo_url")
+                    ),
+                },
+                "Perfiles relacionados": [
+                    {
+                        **item,
+                        "photo_url": (
+                            await local_or_proxy_photo_url(
+                                item.get("photo_url"), item.get("username"), mode="download", page=page, on_failure='empty'
+                            ) if (item.get("photo_url") and item.get("username") and not str(item.get("photo_url")).startswith('/storage/')) else item.get("photo_url")
+                        ),
+                    }
+                    for item in relacionados
+                ],
             }
         finally:
             await context.close()
@@ -714,7 +828,7 @@ def export_to_excel(payload: ExportInput):
 
         objetivo_str = None
         # Prefer username; fallback to full_name or profile_url
-        for key in ["username", "nombre_usuario", "nombre_completo", "full_name", "profile_url", "url_usuario"]:
+        for key in ["username", "nombre_usuario", "nombre_completo", "full_name", "profile_url", "url_usuario", "updated_at"]:
             if objetivo.get(key):
                 objetivo_str = str(objetivo.get(key))
                 break
