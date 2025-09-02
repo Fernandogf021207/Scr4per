@@ -18,6 +18,7 @@ from io import BytesIO
 import pandas as pd
 from pydantic import BaseModel
 import httpx
+import json
 
 # Ensure project root is on sys.path so we can import src.*
 ROOT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
@@ -284,39 +285,86 @@ async def proxy_image(url: str = Query(..., description="URL de la imagen extern
         raise HTTPException(status_code=500, detail=f"Error al obtener la imagen: {str(e)}")
     
 @app.get("/graph-session/{platform}/{owner_username}")
-def load_graph_session(platform: Literal['x','instagram','facebook'], owner_username: str):
+def load_graph_session(platform: Literal['x', 'instagram', 'facebook'], owner_username: str):
     try:
+        # Establecer el esquema según la plataforma
+        schema = _schema(platform)  # _schema obtiene el esquema correcto (red_x, red_instagram, red_facebook)
+
         with get_conn() as conn:
             with conn.cursor() as cur:
-                cur.execute("""
-                  SELECT elements, style, layout, updated_at
-                  FROM graph_sessions
-                  WHERE platform=%s AND owner_username=%s
-                """,(platform, owner_username))
+                # Modificar la consulta para usar el esquema dinámico
+                cur.execute(f"""
+                  SELECT elements, elements_path, style, layout, updated_at
+                  FROM {schema}.graph_sessions
+                  WHERE owner_username=%s
+                """, (owner_username,))
+                
                 row = cur.fetchone()
-                return row or {"elements": None}
+                if not row:
+                    return {"elements": None}
+
+                elements = row.get('elements')
+                path = row.get('elements_path')
+                if path:
+                    try:
+                        # Resolver las rutas relativas contra la raíz del proyecto
+                        full_path = os.path.join(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')), path)
+                        with open(full_path, 'r', encoding='utf-8') as fh:
+                            elements = json.load(fh)
+                    except Exception:
+                        # Si no se puede leer el archivo, mantenemos los datos de la base de datos
+                        pass
+
+                row['elements'] = elements
+                return row
     except Exception as e:
-        raise HTTPException(500, detail=str(e))
+        raise HTTPException(status_code=500, detail=str(e))
+
 
 @app.post("/graph-session")
-def save_graph_session(body: GraphSessionIn):
+async def save_graph_session(body: GraphSessionIn):
     try:
+        # Establecer el esquema en función de la plataforma
+        schema = _schema(body.platform)
+
+        # Definir el directorio base para guardar los archivos de sesiones de grafo
+        base_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'data', 'storage', 'graph_session'))
+        os.makedirs(base_dir, exist_ok=True)
+
+        # Generar el nombre del archivo: <platform>__<owner_username>.json
+        filename = f"{body.platform}__{body.owner_username}.json"
+        tmpname = filename + ".tmp"
+        tmp_path = os.path.join(base_dir, tmpname)
+        final_path = os.path.join(base_dir, filename)
+
+        # Guardar los elementos del grafo en un archivo temporal primero
+        with open(tmp_path, 'w', encoding='utf-8') as fh:
+            json.dump(body.elements or {}, fh, ensure_ascii=False)
+        
+        # Reemplazar el archivo temporal de forma atómica
+        os.replace(tmp_path, final_path)
+
+        # Guardar la ruta relativa del archivo en la base de datos
+        rel_path = os.path.relpath(final_path, start=os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+
+        # Insertar o actualizar los datos del grafo en la base de datos (usando el esquema correcto)
         with get_conn() as conn:
             with conn.cursor() as cur:
-                cur.execute("""
-                  INSERT INTO graph_sessions(platform, owner_username, elements, style, layout, updated_at)
-                  VALUES (%s,%s,%s,%s,%s,NOW())
-                  ON CONFLICT (platform, owner_username) DO UPDATE
-                  SET elements=EXCLUDED.elements,
-                      style=EXCLUDED.style,
-                      layout=EXCLUDED.layout,
-                      updated_at=NOW()
-                  RETURNING platform, owner_username, updated_at;
-                """, (body.platform, body.owner_username, Json(body.elements), Json(body.style), Json(body.layout)))
+                cur.execute(f"""
+                    INSERT INTO {schema}.graph_sessions (owner_username, elements, style, layout, elements_path, updated_at)
+                    VALUES (%s, %s, %s, %s, %s, NOW())
+                    ON CONFLICT (owner_username) DO UPDATE
+                    SET elements = EXCLUDED.elements,
+                        style = EXCLUDED.style,
+                        layout = EXCLUDED.layout,
+                        elements_path = EXCLUDED.elements_path,
+                        updated_at = NOW()
+                    RETURNING id, owner_username, updated_at;
+                """, (body.owner_username, Json(body.elements), Json(body.style), Json(body.layout), rel_path))
                 conn.commit()
                 return cur.fetchone()
     except Exception as e:
-        raise HTTPException(500, detail=str(e))
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/health")
 def health():
