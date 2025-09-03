@@ -4,6 +4,7 @@ from typing import Optional
 
 import httpx
 from urllib.parse import quote_plus, urlencode
+import asyncio
 
 
 # Repo root: src/utils/images.py -> ../../
@@ -153,6 +154,8 @@ async def local_or_proxy_photo_url(
     mode: str = "download",
     page: Optional[object] = None,
     on_failure: str = "empty",
+    retries: int = 3,
+    backoff_seconds: float = 0.4,
 ) -> str:
     """
     Devuelve una URL utilizable por el frontend para mostrar la imagen de perfil.
@@ -169,5 +172,24 @@ async def local_or_proxy_photo_url(
         return f"/proxy-image?url={quote_plus(photo_url)}"
     if mode == "external":
         return photo_url
-    # default -> download
-    return await download_profile_image(photo_url, username, page=page, on_failure=on_failure)
+    # default -> download with retries
+    # If already a local storage path, return as-is
+    if str(photo_url).startswith('/storage/'):
+        return photo_url
+
+    attempts = max(1, int(retries))
+    for i in range(attempts):
+        result = await download_profile_image(photo_url, username, page=page, on_failure='empty')
+        if result and result.startswith('/storage/'):
+            return result
+        if i < attempts - 1:
+            try:
+                await asyncio.sleep(backoff_seconds * (i + 1))
+            except Exception:
+                pass
+    # All attempts failed
+    if on_failure == 'proxy':
+        return f"/proxy-image?url={quote_plus(photo_url)}"
+    if on_failure == 'raise':
+        raise RuntimeError("Image download failed after retries")
+    return ""
