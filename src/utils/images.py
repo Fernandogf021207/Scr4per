@@ -70,7 +70,7 @@ async def download_profile_image(
     overwrite: bool = False,
     timeout: float = 20.0,
     page: Optional[object] = None,
-    on_failure: str = "empty",  # 'empty' | 'proxy' | 'raise'
+    on_failure: str = "proxy",  # 'empty' | 'proxy' | 'raise'
 ) -> str:
     """
     Descarga la foto de perfil al servidor y devuelve la ruta local accesible por el frontend.
@@ -153,7 +153,7 @@ async def local_or_proxy_photo_url(
     username: str,
     mode: str = "download",
     page: Optional[object] = None,
-    on_failure: str = "empty",
+    on_failure: str = "proxy",
     retries: int = 3,
     backoff_seconds: float = 0.4,
 ) -> str:
@@ -179,7 +179,7 @@ async def local_or_proxy_photo_url(
 
     attempts = max(1, int(retries))
     for i in range(attempts):
-        result = await download_profile_image(photo_url, username, page=page, on_failure='empty')
+        result = await download_profile_image(photo_url, username, page=page, on_failure='proxy')
         if result and result.startswith('/storage/'):
             return result
         if i < attempts - 1:

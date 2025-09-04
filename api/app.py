@@ -690,7 +690,13 @@ async def scrape(req: ScrapeRequest):
                             # Skip if already local
                             if not str(perfil_obj['photo_url']).startswith('/storage/'):
                                 perfil_obj['photo_url'] = await local_or_proxy_photo_url(
-                                    perfil_obj.get('photo_url'), perfil_obj.get('username'), mode='download', page=page, on_failure='empty'
+                                    perfil_obj.get('photo_url'),
+                                    perfil_obj.get('username'),
+                                    mode='download',
+                                    page=page,
+                                    on_failure='proxy',
+                                    retries=5,
+                                    backoff_seconds=0.5,
                                 )
                     except Exception:
                         perfil_obj['photo_url'] = ""
@@ -728,7 +734,15 @@ async def scrape(req: ScrapeRequest):
                         if photo_local:
                             try:
                                 if not str(photo_local).startswith('/storage/'):
-                                    photo_local = await local_or_proxy_photo_url(photo_local, u, mode='download', page=page, on_failure='empty')
+                                    photo_local = await local_or_proxy_photo_url(
+                                        photo_local,
+                                        u,
+                                        mode='download',
+                                        page=page,
+                                        on_failure='proxy',
+                                        retries=5,
+                                        backoff_seconds=0.5,
+                                    )
                             except Exception:
                                 photo_local = ""
                         upsert_profile(cur, platform, u, f.get('full_name'), f.get('profile_url'), photo_local)
@@ -739,7 +753,15 @@ async def scrape(req: ScrapeRequest):
                         if photo_local:
                             try:
                                 if not str(photo_local).startswith('/storage/'):
-                                    photo_local = await local_or_proxy_photo_url(photo_local, u, mode='download', page=page, on_failure='empty')
+                                    photo_local = await local_or_proxy_photo_url(
+                                        photo_local,
+                                        u,
+                                        mode='download',
+                                        page=page,
+                                        on_failure='proxy',
+                                        retries=5,
+                                        backoff_seconds=0.5,
+                                    )
                             except Exception:
                                 photo_local = ""
                         upsert_profile(cur, platform, u, f.get('full_name'), f.get('profile_url'), photo_local)
@@ -752,7 +774,15 @@ async def scrape(req: ScrapeRequest):
                             if photo_local:
                                 try:
                                     if not str(photo_local).startswith('/storage/'):
-                                        photo_local = await local_or_proxy_photo_url(photo_local, u, mode='download', page=page, on_failure='empty')
+                                        photo_local = await local_or_proxy_photo_url(
+                                            photo_local,
+                                            u,
+                                            mode='download',
+                                            page=page,
+                                            on_failure='proxy',
+                                            retries=5,
+                                            backoff_seconds=0.5,
+                                        )
                                 except Exception:
                                     photo_local = ""
                             upsert_profile(cur, platform, u, f.get('full_name'), f.get('profile_url'), photo_local)
@@ -776,7 +806,15 @@ async def scrape(req: ScrapeRequest):
                             if photo_local:
                                 try:
                                     if not str(photo_local).startswith('/storage/'):
-                                        photo_local = await local_or_proxy_photo_url(photo_local, uname, mode='download', page=page, on_failure='empty')
+                                        photo_local = await local_or_proxy_photo_url(
+                                            photo_local,
+                                            uname,
+                                            mode='download',
+                                            page=page,
+                                            on_failure='proxy',
+                                            retries=5,
+                                            backoff_seconds=0.5,
+                                        )
                                 except Exception:
                                     photo_local = ""
                             upsert_profile(cur, platform, uname, f.get('full_name'), f.get('profile_url'), photo_local)
@@ -798,7 +836,15 @@ async def scrape(req: ScrapeRequest):
                                 if photo_local:
                                     try:
                                         if not str(photo_local).startswith('/storage/'):
-                                            photo_local = await local_or_proxy_photo_url(photo_local, uname, mode='download', page=page, on_failure='empty')
+                                            photo_local = await local_or_proxy_photo_url(
+                                                photo_local,
+                                                uname,
+                                                mode='download',
+                                                page=page,
+                                                on_failure='proxy',
+                                                retries=5,
+                                                backoff_seconds=0.5,
+                                            )
                                     except Exception:
                                         photo_local = ""
                                 upsert_profile(cur, platform, uname, f.get('full_name'), f.get('profile_url'), photo_local)
@@ -844,7 +890,13 @@ async def scrape(req: ScrapeRequest):
                     **perfil_obj,
                     "photo_url": (
                         await local_or_proxy_photo_url(
-                            perfil_obj.get("photo_url"), perfil_obj.get("username"), mode="download", page=page, on_failure='empty'
+                            perfil_obj.get("photo_url"),
+                            perfil_obj.get("username"),
+                            mode="download",
+                            page=page,
+                            on_failure='proxy',
+                            retries=5,
+                            backoff_seconds=0.5,
                         ) if (perfil_obj.get("photo_url") and not str(perfil_obj.get("photo_url")).startswith('/storage/')) else perfil_obj.get("photo_url")
                     ),
                 },
@@ -853,7 +905,13 @@ async def scrape(req: ScrapeRequest):
                         **item,
                         "photo_url": (
                             await local_or_proxy_photo_url(
-                                item.get("photo_url"), item.get("username"), mode="download", page=page, on_failure='empty'
+                                item.get("photo_url"),
+                                item.get("username"),
+                                mode="download",
+                                page=page,
+                                on_failure='proxy',
+                                retries=5,
+                                backoff_seconds=0.5,
                             ) if (item.get("photo_url") and item.get("username") and not str(item.get("photo_url")).startswith('/storage/')) else item.get("photo_url")
                         ),
                     }
