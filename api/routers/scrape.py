@@ -7,6 +7,7 @@ from ..deps import storage_state_for
 from ..repositories import upsert_profile, add_relationship, add_post, add_comment, add_reaction
 from src.utils.url import normalize_input_url, normalize_post_url
 from src.utils.images import local_or_proxy_photo_url
+from .related import _build_related_from_db
 
 # Scrapers
 from src.scrapers.facebook.scraper import (
@@ -217,10 +218,71 @@ async def scrape(req: ScrapeRequest):
 
                     conn.commit()
 
-            # Build response (lee desde DB si lo necesitas; aquí devolvemos objetos locales)
+            # Rebuild relacionados desde DB para consolidar tipos (como en app.py)
+            try:
+                with get_conn() as conn2:
+                    with conn2.cursor() as cur2:
+                        relacionados = _build_related_from_db(cur2, platform, perfil_obj['username'])
+            except Exception:
+                # Fallback: múltiples apariciones por tipo si no podemos leer DB
+                relacionados = []
+                relacionados += [
+                    {"username": u, "tipo de relacion": 'seguidor', "full_name": None, "profile_url": None, "photo_url": None}
+                    for u in followers_usernames
+                ]
+                relacionados += [
+                    {"username": u, "tipo de relacion": 'seguido', "full_name": None, "profile_url": None, "photo_url": None}
+                    for u in following_usernames
+                ]
+                relacionados += [
+                    {"username": u, "tipo de relacion": 'comentó', "full_name": None, "profile_url": None, "photo_url": None}
+                    for u in commenters_usernames
+                ]
+                relacionados += [
+                    {"username": u, "tipo de relacion": 'amigo', "full_name": None, "profile_url": None, "photo_url": None}
+                    for u in friends_usernames
+                ]
+                relacionados += [
+                    {"username": u, "tipo de relacion": 'reaccionó', "full_name": None, "profile_url": None, "photo_url": None}
+                    for u in reactors_usernames
+                ]
+
+            # Asegurar rutas locales en la respuesta (si algo quedó externo accidentalmente)
+            objetivo_out = {
+                **perfil_obj,
+                "photo_url": (
+                    await local_or_proxy_photo_url(
+                        perfil_obj.get("photo_url"),
+                        perfil_obj.get("username"),
+                        mode="download",
+                        page=page,
+                        on_failure='empty',
+                        retries=5,
+                        backoff_seconds=0.5,
+                    ) if (perfil_obj.get("photo_url") and not str(perfil_obj.get("photo_url")).startswith('/storage/')) else perfil_obj.get("photo_url")
+                ),
+            }
+            relacionados_out = [
+                {
+                    **item,
+                    "photo_url": (
+                        await local_or_proxy_photo_url(
+                            item.get("photo_url"),
+                            item.get("username"),
+                            mode="download",
+                            page=page,
+                            on_failure='empty',
+                            retries=5,
+                            backoff_seconds=0.5,
+                        ) if (item.get("photo_url") and item.get("username") and not str(item.get("photo_url")).startswith('/storage/')) else item.get("photo_url")
+                    ),
+                }
+                for item in relacionados
+            ]
+
             return {
-                "Perfil objetivo": perfil_obj,
-                "Perfiles relacionados": [],  # puedes reutilizar related.get_related si prefieres
+                "Perfil objetivo": objetivo_out,
+                "Perfiles relacionados": relacionados_out,
             }
         finally:
             await context.close()
