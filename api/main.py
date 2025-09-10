@@ -3,6 +3,7 @@ import sys
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
+import os
 
 # Make repo root importable
 ROOT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
@@ -27,8 +28,18 @@ def create_app() -> FastAPI:
         allow_headers=["*"],
     )
 
+    # Ensure storage dir exists so static mount will work
+    try:
+        repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+        preferred_storage = os.path.join(repo_root, 'src', 'data', 'storage')
+        preferred_images = os.path.join(preferred_storage, 'images')
+        os.makedirs(preferred_images, exist_ok=True)
+    except Exception:
+        pass
+
     # Static /storage
     storage_candidates = [
+        os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'src', 'data', 'storage')),
         os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'data', 'storage')),
         os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'storage')),
     ]
@@ -49,6 +60,7 @@ def create_app() -> FastAPI:
     from .routers.related import router as related_router
     from .routers.scrape import router as scrape_router
     from .routers.export import router as export_router
+    from .routers.files import router as files_router
 
     app.include_router(health_router)
     app.include_router(proxy_router)
@@ -61,6 +73,7 @@ def create_app() -> FastAPI:
     app.include_router(related_router)
     app.include_router(scrape_router)
     app.include_router(export_router)
+    app.include_router(files_router, prefix="/files")
 
     return app
 
