@@ -28,3 +28,4 @@ poetry.lock
 
 tests/
 migrations/
+api/data/

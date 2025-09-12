@@ -5,10 +5,16 @@ from fastapi import APIRouter, UploadFile, File, HTTPException
 
 router = APIRouter()
 
-_IMAGES_SUBDIR = os.path.join('src', 'data', 'storage', 'images')
+"""Almacenamiento de imágenes.
 
-# Ensure directory exists at import (safe even if it already exists)
-os.makedirs(_IMAGES_SUBDIR, exist_ok=True)
+Se usa el directorio raíz del proyecto: ./data/storage/images
+La URL pública (contrato actual) permanece: /data/storage/images/<file>
+Mount de compatibilidad adicional: /storage/images/<file>
+Esto permite eliminar la carpeta api/data/storage.
+"""
+REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
+_IMAGES_ABS_DIR = os.path.join(REPO_ROOT, 'data', 'storage', 'images')
+os.makedirs(_IMAGES_ABS_DIR, exist_ok=True)
 
 _filename_safe_re = re.compile(r"[^a-zA-Z0-9._-]+")
 
@@ -29,18 +35,17 @@ async def upload_image(file: UploadFile = File(...)):
         ctype = file.content_type or ''
         if not ctype.startswith('image/'):
             raise HTTPException(status_code=400, detail='El archivo debe ser una imagen')
-
         ext = _safe_ext(file.filename)
         name = f"{uuid.uuid4().hex}{ext}"
-        dest_path = os.path.join(_IMAGES_SUBDIR, name)
+        dest_path = os.path.join(_IMAGES_ABS_DIR, name)
 
         # Stream save
         content = await file.read()
         with open(dest_path, 'wb') as f:
             f.write(content)
 
-        # Return public URL (served by /storage mount)
-        return {"url": f"/storage/images/{name}"}
+    # Contrato: devolver /data/storage/images/... (también accesible vía /storage/images/...)
+        return {"url": f"/data/storage/images/{name}"}
     except HTTPException:
         raise
     except Exception as e:
