@@ -1,18 +1,10 @@
 import os
 import re
 from typing import Optional
-
 import httpx
 from urllib.parse import quote_plus, urlencode
 import asyncio
-
-
-# Repo root: src/utils/images.py -> ../../
-ROOT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
-# Prefer data/storage/images if available, else storage/images
-_preferred = os.path.join(ROOT_DIR, "data", "storage", "images")
-_fallback = os.path.join(ROOT_DIR, "storage", "images")
-IMAGES_DIR = _preferred if os.path.isdir(os.path.dirname(_preferred)) else _fallback
+from paths import IMAGES_DIR, PUBLIC_IMAGES_PREFIX_PRIMARY, ensure_dirs
 
 
 def _safe_filename(name: str) -> str:
@@ -84,7 +76,7 @@ async def download_profile_image(
     if not photo_url:
         return ""
 
-    os.makedirs(IMAGES_DIR, exist_ok=True)
+    ensure_dirs()
 
     # First do a lightweight HEAD to probe content-type (best-effort)
     content_type: Optional[str] = None
@@ -103,7 +95,7 @@ async def download_profile_image(
             file_path = os.path.join(IMAGES_DIR, filename)
 
             if not overwrite and os.path.exists(file_path):
-                return f"/storage/images/{filename}"
+                return f"{PUBLIC_IMAGES_PREFIX_PRIMARY}/{filename}"
 
             # Download the image
             resp = await client.get(photo_url)
@@ -121,8 +113,7 @@ async def download_profile_image(
             with open(tmp_path, "wb") as f:
                 f.write(resp.content)
             os.replace(tmp_path, file_path)
-
-        return f"/storage/images/{filename}"
+        return f"{PUBLIC_IMAGES_PREFIX_PRIMARY}/{filename}"
     except Exception:
         # Fallback using Playwright page with session cookies if provided
         if page is not None:
@@ -137,7 +128,7 @@ async def download_profile_image(
                     with open(tmp_path, "wb") as f:
                         f.write(await r.body())
                     os.replace(tmp_path, file_path)
-                    return f"/storage/images/{filename}"
+                    return f"{PUBLIC_IMAGES_PREFIX_PRIMARY}/{filename}"
             except Exception:
                 pass
         # Final fallback policy

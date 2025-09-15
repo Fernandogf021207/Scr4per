@@ -2,6 +2,7 @@ import os
 import re
 import uuid
 from fastapi import APIRouter, UploadFile, File, HTTPException
+from paths import IMAGES_DIR, PUBLIC_IMAGES_PREFIX_PRIMARY, PUBLIC_IMAGES_PREFIX_COMPAT, ensure_dirs
 
 router = APIRouter()
 
@@ -12,9 +13,7 @@ La URL pública (contrato actual) permanece: /data/storage/images/<file>
 Mount de compatibilidad adicional: /storage/images/<file>
 Esto permite eliminar la carpeta api/data/storage.
 """
-REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
-_IMAGES_ABS_DIR = os.path.join(REPO_ROOT, 'data', 'storage', 'images')
-os.makedirs(_IMAGES_ABS_DIR, exist_ok=True)
+ensure_dirs()
 
 _filename_safe_re = re.compile(r"[^a-zA-Z0-9._-]+")
 
@@ -37,15 +36,15 @@ async def upload_image(file: UploadFile = File(...)):
             raise HTTPException(status_code=400, detail='El archivo debe ser una imagen')
         ext = _safe_ext(file.filename)
         name = f"{uuid.uuid4().hex}{ext}"
-        dest_path = os.path.join(_IMAGES_ABS_DIR, name)
+        dest_path = os.path.join(IMAGES_DIR, name)
 
         # Stream save
         content = await file.read()
         with open(dest_path, 'wb') as f:
             f.write(content)
 
-    # Contrato: devolver /data/storage/images/... (también accesible vía /storage/images/...)
-        return {"url": f"/data/storage/images/{name}"}
+        # Contrato: devolver prefijo primario. El compat se mantiene montado en main.
+        return {"url": f"{PUBLIC_IMAGES_PREFIX_PRIMARY}/{name}"}
     except HTTPException:
         raise
     except Exception as e:

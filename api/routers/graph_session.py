@@ -4,6 +4,7 @@ from fastapi import APIRouter, HTTPException
 from psycopg2.extras import Json
 from ..db import get_conn
 from ..deps import _schema
+from paths import GRAPH_SESSION_DIR, REPO_ROOT, ensure_dirs
 
 router = APIRouter()
 
@@ -45,16 +46,16 @@ def save_graph_session(body: dict):
         style = body.get("style")
         layout = body.get("layout")
         schema = _schema(platform)
-
-        base_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'data', 'storage', 'graph_session'))
-        os.makedirs(base_dir, exist_ok=True)
+        ensure_dirs()
+        base_dir = GRAPH_SESSION_DIR
         filename = f"{platform}__{owner_username}.json"
         tmp_path = os.path.join(base_dir, filename + ".tmp")
         final_path = os.path.join(base_dir, filename)
         with open(tmp_path, 'w', encoding='utf-8') as fh:
             json.dump(elements, fh, ensure_ascii=False)
         os.replace(tmp_path, final_path)
-        rel_path = os.path.relpath(final_path, start=os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+        # Guardamos la ruta relativa respecto a la raíz del repositorio para futuras lecturas
+        rel_path = os.path.relpath(final_path, start=REPO_ROOT)
 
         with get_conn() as conn:
             with conn.cursor() as cur:
