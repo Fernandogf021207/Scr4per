@@ -10,7 +10,7 @@ import asyncio
 # Repo root: src/utils/images.py -> ../../
 ROOT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 # New preference order: src/data/storage/images -> data/storage/images -> storage/images
-_preferred = os.path.join(ROOT_DIR, "src", "data", "storage", "images")
+_preferred = os.path.join(ROOT_DIR, "..", "data", "storage", "images")
 _alt = os.path.join(ROOT_DIR, "data", "storage", "images")
 _fallback = os.path.join(ROOT_DIR, "storage", "images")
 # Choose first existing parent, else default to preferred and create when needed

@@ -5,7 +5,7 @@ from fastapi import APIRouter, UploadFile, File, HTTPException
 
 router = APIRouter()
 
-_IMAGES_SUBDIR = os.path.join('src', 'data', 'storage', 'images')
+_IMAGES_SUBDIR = os.path.join('..', 'data', 'storage', 'images')
 
 # Ensure directory exists at import (safe even if it already exists)
 os.makedirs(_IMAGES_SUBDIR, exist_ok=True)
