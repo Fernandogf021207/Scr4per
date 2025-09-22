@@ -46,8 +46,10 @@ def save_graph_session(body: dict):
         style = body.get("style")
         layout = body.get("layout")
         schema = _schema(platform)
-        ensure_dirs()
-        base_dir = GRAPH_SESSION_DIR
+        repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
+        base_dir = os.path.join(repo_root, '..', 'data', 'storage', 'graph_session')
+        os.makedirs(base_dir, exist_ok=True)
+
         filename = f"{platform}__{owner_username}.json"
         tmp_path = os.path.join(base_dir, filename + ".tmp")
         final_path = os.path.join(base_dir, filename)
