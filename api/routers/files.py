@@ -2,13 +2,13 @@ import os
 import re
 import uuid
 from fastapi import APIRouter, UploadFile, File, HTTPException
+from paths import IMAGES_DIR, PUBLIC_IMAGES_PREFIX_PRIMARY, PUBLIC_IMAGES_PREFIX_COMPAT, ensure_dirs
 
 router = APIRouter()
 
 _IMAGES_SUBDIR = os.path.join('..', 'data', 'storage', 'images')
 
-# Ensure directory exists at import (safe even if it already exists)
-os.makedirs(_IMAGES_SUBDIR, exist_ok=True)
+ensure_dirs()
 
 _filename_safe_re = re.compile(r"[^a-zA-Z0-9._-]+")
 
@@ -29,18 +29,17 @@ async def upload_image(file: UploadFile = File(...)):
         ctype = file.content_type or ''
         if not ctype.startswith('image/'):
             raise HTTPException(status_code=400, detail='El archivo debe ser una imagen')
-
         ext = _safe_ext(file.filename)
         name = f"{uuid.uuid4().hex}{ext}"
-        dest_path = os.path.join(_IMAGES_SUBDIR, name)
+        dest_path = os.path.join(IMAGES_DIR, name)
 
         # Stream save
         content = await file.read()
         with open(dest_path, 'wb') as f:
             f.write(content)
 
-        # Return public URL (served by /storage mount)
-        return {"url": f"/storage/images/{name}"}
+        # Contrato: devolver prefijo primario. El compat se mantiene montado en main.
+        return {"url": f"{PUBLIC_IMAGES_PREFIX_PRIMARY}/{name}"}
     except HTTPException:
         raise
     except Exception as e:

@@ -4,6 +4,7 @@ from fastapi import APIRouter, HTTPException
 from psycopg2.extras import Json
 from ..db import get_conn
 from ..deps import _schema
+from paths import GRAPH_SESSION_DIR, REPO_ROOT, ensure_dirs
 
 router = APIRouter()
 
@@ -25,9 +26,8 @@ def load_graph_session(platform: Literal['x','instagram','facebook'], owner_user
                 path = row.get('elements_path')
                 if path:
                     try:
-                        # Resolve relative to repo root
-                        repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
-                        full_path = path if os.path.isabs(path) else os.path.join(repo_root, path)
+                        root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+                        full_path = os.path.join(root, path) if not os.path.isabs(path) else path
                         with open(full_path, 'r', encoding='utf-8') as fh:
                             elements = json.load(fh)
                     except Exception:
@@ -46,19 +46,18 @@ def save_graph_session(body: dict):
         style = body.get("style")
         layout = body.get("layout")
         schema = _schema(platform)
-
-        # Save under src/data/storage/graph_session (preferred)
         repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
         base_dir = os.path.join(repo_root, '..', 'data', 'storage', 'graph_session')
         os.makedirs(base_dir, exist_ok=True)
+
         filename = f"{platform}__{owner_username}.json"
         tmp_path = os.path.join(base_dir, filename + ".tmp")
         final_path = os.path.join(base_dir, filename)
         with open(tmp_path, 'w', encoding='utf-8') as fh:
             json.dump(elements, fh, ensure_ascii=False)
         os.replace(tmp_path, final_path)
-        # Store DB path relative to repo root for portability
-        rel_path = os.path.relpath(final_path, start=repo_root)
+        # Guardamos la ruta relativa respecto a la raíz del repositorio para futuras lecturas
+        rel_path = os.path.relpath(final_path, start=REPO_ROOT)
 
         with get_conn() as conn:
             with conn.cursor() as cur:

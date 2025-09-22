@@ -3,7 +3,7 @@ import sys
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-import os
+from paths import STORAGE_DIR, PUBLIC_IMAGES_PREFIX_PRIMARY, PUBLIC_IMAGES_PREFIX_COMPAT, ensure_dirs
 
 # Make repo root importable
 ROOT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
@@ -17,6 +17,7 @@ def create_app() -> FastAPI:
     _default_frontend_origins = [
         "http://localhost:3000",
         "http://127.0.0.1:3000",
+        "https://localhost:5173",
     ]
     _extra_origins = [o.strip() for o in (os.getenv("FRONTEND_ORIGINS") or "").split(",") if o.strip()]
     _allowed_origins = list({*(_default_frontend_origins + _extra_origins)})
@@ -28,25 +29,16 @@ def create_app() -> FastAPI:
         allow_headers=["*"],
     )
 
-    # Ensure storage dir exists so static mount will work
-    try:
-        repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
-        preferred_storage = os.path.join(repo_root, 'src', 'data', 'storage')
-        preferred_images = os.path.join(preferred_storage, 'images')
-        os.makedirs(preferred_images, exist_ok=True)
-    except Exception:
-        pass
-
-    # Static /storage
-    storage_candidates = [
-        os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'src', 'data', 'storage')),
-        os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'data', 'storage')),
-        os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'storage')),
-    ]
-    for cand in storage_candidates:
-        if os.path.isdir(cand):
-            app.mount("/storage", StaticFiles(directory=cand), name="storage")
-            break
+    # Static mounts
+    # Directorio real: <repo>/data/storage
+    # Exponemos dos prefijos:
+    #  - /data/storage  (contrato actual devuelto por upload-image)
+    #  - /storage       (alias de compatibilidad)
+    # Esto permite eliminar cualquier carpeta duplicada bajo api/.
+    ensure_dirs()
+    if os.path.isdir(STORAGE_DIR):
+        app.mount("/data/storage", StaticFiles(directory=STORAGE_DIR), name="data_storage")
+        app.mount("/storage", StaticFiles(directory=STORAGE_DIR), name="storage_compat")
 
     # Routers
     from .routers.health import router as health_router
