@@ -53,6 +53,7 @@ def create_app() -> FastAPI:
     from .routers.scrape import router as scrape_router
     from .routers.export import router as export_router
     from .routers.files import router as files_router
+    from .routers.multi_scrape import router as multi_scrape_router
 
     app.include_router(health_router)
     app.include_router(proxy_router)
@@ -66,6 +67,7 @@ def create_app() -> FastAPI:
     app.include_router(scrape_router)
     app.include_router(export_router)
     app.include_router(files_router, prefix="/files")
+    app.include_router(multi_scrape_router)
 
     return app
 
