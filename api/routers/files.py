@@ -6,13 +6,8 @@ from paths import IMAGES_DIR, PUBLIC_IMAGES_PREFIX_PRIMARY, PUBLIC_IMAGES_PREFIX
 
 router = APIRouter()
 
-"""Almacenamiento de imágenes.
+_IMAGES_SUBDIR = os.path.join('..', 'data', 'storage', 'images')
 
-Se usa el directorio raíz del proyecto: ./data/storage/images
-La URL pública (contrato actual) permanece: /data/storage/images/<file>
-Mount de compatibilidad adicional: /storage/images/<file>
-Esto permite eliminar la carpeta api/data/storage.
-"""
 ensure_dirs()
 
 _filename_safe_re = re.compile(r"[^a-zA-Z0-9._-]+")

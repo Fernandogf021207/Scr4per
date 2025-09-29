@@ -4,7 +4,19 @@ from typing import Optional
 import httpx
 from urllib.parse import quote_plus, urlencode
 import asyncio
-from paths import IMAGES_DIR, PUBLIC_IMAGES_PREFIX_PRIMARY, ensure_dirs
+
+ROOT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+# New preference order: src/data/storage/images -> data/storage/images -> storage/images
+_preferred = os.path.join(ROOT_DIR, "..", "data", "storage", "images")
+_alt = os.path.join(ROOT_DIR, "data", "storage", "images")
+_fallback = os.path.join(ROOT_DIR, "storage", "images")
+# Choose first existing parent, else default to preferred and create when needed
+if os.path.isdir(os.path.dirname(_preferred)):
+    IMAGES_DIR = _preferred
+elif os.path.isdir(os.path.dirname(_alt)):
+    IMAGES_DIR = _alt
+else:
+    IMAGES_DIR = _preferred
 
 
 def _safe_filename(name: str) -> str:
