@@ -4,19 +4,7 @@ from typing import Optional
 import httpx
 from urllib.parse import quote_plus, urlencode
 import asyncio
-
-ROOT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
-# New preference order: src/data/storage/images -> data/storage/images -> storage/images
-_preferred = os.path.join(ROOT_DIR, "..", "data", "storage", "images")
-_alt = os.path.join(ROOT_DIR, "data", "storage", "images")
-_fallback = os.path.join(ROOT_DIR, "storage", "images")
-# Choose first existing parent, else default to preferred and create when needed
-if os.path.isdir(os.path.dirname(_preferred)):
-    IMAGES_DIR = _preferred
-elif os.path.isdir(os.path.dirname(_alt)):
-    IMAGES_DIR = _alt
-else:
-    IMAGES_DIR = _preferred
+from paths import IMAGES_DIR, PUBLIC_IMAGES_PREFIX_PRIMARY, ensure_dirs
 
 
 def _safe_filename(name: str) -> str:
@@ -83,7 +71,7 @@ async def download_profile_image(
     - Deduce la extensión por content-type o URL (fallback .jpg).
     - Evita re-descargar si ya existe (a menos que overwrite=True).
 
-    Returns: ruta relativa tipo "/storage/images/<username>.<ext>"
+    Returns: ruta relativa tipo "/data/storage/images/<username>.<ext>"
     """
     if not photo_url:
         return ""
@@ -183,7 +171,7 @@ async def local_or_proxy_photo_url(
     attempts = max(1, int(retries))
     for i in range(attempts):
         result = await download_profile_image(photo_url, username, page=page, on_failure='proxy')
-        if result and result.startswith('/storage/'):
+        if result and (result.startswith('/storage/') or result.startswith(PUBLIC_IMAGES_PREFIX_PRIMARY)):
             return result
         if i < attempts - 1:
             try:
