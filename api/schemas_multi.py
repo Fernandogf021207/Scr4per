@@ -33,7 +33,7 @@ class MultiScrapeRequest(BaseModel):
 class ProfileOut(BaseModel):
     platform: str
     username: str
-    full_name: Optional[str]
+    full_name: str
     profile_url: Optional[str]
     photo_url: Optional[str]
     sources: List[str]
@@ -46,15 +46,14 @@ class RelationOut(BaseModel):
 
 class MultiScrapeMeta(BaseModel):
     schema_version: int
+    build_ms: int
     roots_requested: int
     roots_processed: int
-    build_ms: int
-    generated_at: str
 
 class MultiScrapeResponse(BaseModel):
     schema_version: int = 2
     root_profiles: List[str]
     profiles: List[ProfileOut]
     relations: List[RelationOut]
-    warnings: List[dict]
-    meta: MultiScrapeMeta
+    meta: dict
+    warnings: list = []
