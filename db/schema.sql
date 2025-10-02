@@ -1,134 +1,269 @@
 -- ============================================================
--- Scr4per unified schema (core)
--- Combines base schema + all migrations into a single script.
--- Drops legacy platform-specific schemas and builds everything under `core`.
+-- schema_merged.sql  (Scr4per)
+-- Crea/actualiza: red_x, red_instagram, red_facebook
+-- Incluye migraciones: 'friend' en FB y tablas reactions (X/IG/FB)
+-- Es idempotente.
 -- ============================================================
 
 BEGIN;
 
 -- ------------------------------------------------------------
--- Ensure target schema + helpers
+-- 1) Esquemas
 -- ------------------------------------------------------------
-CREATE SCHEMA IF NOT EXISTS core;
-CREATE EXTENSION IF NOT EXISTS pgcrypto;  -- for gen_random_uuid()
+CREATE SCHEMA IF NOT EXISTS red_x;
+CREATE SCHEMA IF NOT EXISTS red_instagram;
+CREATE SCHEMA IF NOT EXISTS red_facebook;
 
--- Enums (create or extend with missing values)
+-- ------------------------------------------------------------
+-- 2) Enums por esquema (crear si no existen)
+-- ------------------------------------------------------------
 DO $$
-DECLARE
-  label TEXT;
 BEGIN
-  IF to_regtype('core.platform_enum') IS NULL THEN
-    CREATE TYPE core.platform_enum AS ENUM ('facebook', 'instagram', 'x');
+  -- red_x
+  IF to_regtype('red_x.platform_enum') IS NULL THEN
+    CREATE TYPE red_x.platform_enum AS ENUM ('x');
+  END IF;
+  IF to_regtype('red_x.rel_type_enum') IS NULL THEN
+    CREATE TYPE red_x.rel_type_enum AS ENUM ('follower', 'following');
   END IF;
 
-  IF to_regtype('core.rel_type_enum') IS NULL THEN
-    CREATE TYPE core.rel_type_enum AS ENUM (
-      'follower', 'following', 'followed', 'friend', 'commented', 'reacted'
-    );
-  ELSE
-    FOREACH label IN ARRAY ARRAY['follower','following','followed','friend','commented','reacted'] LOOP
-      IF NOT EXISTS (
-        SELECT 1 FROM pg_enum e
-        JOIN pg_type t ON t.oid = e.enumtypid
-        JOIN pg_namespace n ON n.oid = t.typnamespace
-        WHERE n.nspname = 'core'
-          AND t.typname = 'rel_type_enum'
-          AND e.enumlabel = label
-      ) THEN
-        EXECUTE format('ALTER TYPE core.rel_type_enum ADD VALUE IF NOT EXISTS %L', label);
-      END IF;
-    END LOOP;
+  -- red_instagram
+  IF to_regtype('red_instagram.platform_enum') IS NULL THEN
+    CREATE TYPE red_instagram.platform_enum AS ENUM ('instagram');
+  END IF;
+  IF to_regtype('red_instagram.rel_type_enum') IS NULL THEN
+    CREATE TYPE red_instagram.rel_type_enum AS ENUM ('follower', 'following');
+  END IF;
+
+  -- red_facebook
+  IF to_regtype('red_facebook.platform_enum') IS NULL THEN
+    CREATE TYPE red_facebook.platform_enum AS ENUM ('facebook');
+  END IF;
+  IF to_regtype('red_facebook.rel_type_enum') IS NULL THEN
+    CREATE TYPE red_facebook.rel_type_enum AS ENUM ('follower', 'following');
+  END IF;
+END
+$$;
+
+-- Asegurar que 'friend' esté en el enum de Facebook (migración)
+DO $$
+BEGIN
+  -- si existe el enum, añade 'friend' si falta
+  IF to_regtype('red_facebook.rel_type_enum') IS NOT NULL THEN
+    IF NOT EXISTS (
+      SELECT 1
+      FROM pg_enum e
+      JOIN pg_type t ON t.oid = e.enumtypid
+      JOIN pg_namespace n ON n.oid = t.typnamespace
+      WHERE n.nspname = 'red_facebook'
+        AND t.typname = 'rel_type_enum'
+        AND e.enumlabel = 'friend'
+    ) THEN
+      EXECUTE 'ALTER TYPE red_facebook.rel_type_enum ADD VALUE IF NOT EXISTS ''friend''';
+    END IF;
+  END IF;
+END
+$$;
+
+-- (Compat opcional por si alguna instalación usa un esquema 'core' con rel_type_enum)
+DO $$
+BEGIN
+  IF EXISTS (
+    SELECT 1 FROM pg_type t
+    JOIN pg_namespace n ON n.oid = t.typnamespace
+    WHERE t.typname = 'rel_type_enum' AND n.nspname = 'core'
+  ) THEN
+    IF NOT EXISTS (
+      SELECT 1
+      FROM pg_enum e
+      JOIN pg_type t ON t.oid = e.enumtypid
+      JOIN pg_namespace n ON n.oid = t.typnamespace
+      WHERE n.nspname = 'core'
+        AND t.typname = 'rel_type_enum'
+        AND e.enumlabel = 'friend'
+    ) THEN
+      EXECUTE 'ALTER TYPE core.rel_type_enum ADD VALUE IF NOT EXISTS ''friend''';
+    END IF;
   END IF;
 END
 $$;
 
 -- ------------------------------------------------------------
--- Tables
+-- 3) Tablas por esquema
+--    (perfiles, relaciones, posts, comments, reactions)
 -- ------------------------------------------------------------
-CREATE TABLE IF NOT EXISTS core.profiles (
+
+-- ======================== red_x ========================
+CREATE TABLE IF NOT EXISTS red_x.profiles (
   id          BIGSERIAL PRIMARY KEY,
-  platform    core.platform_enum NOT NULL,
+  platform    red_x.platform_enum NOT NULL DEFAULT 'x',
   username    TEXT NOT NULL,
   full_name   TEXT,
   profile_url TEXT,
   photo_url   TEXT,
   created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  CONSTRAINT uq_core_profiles UNIQUE (platform, username)
+  CONSTRAINT uq_profiles_x UNIQUE (platform, username),
+  CONSTRAINT chk_profiles_platform_x CHECK (platform = 'x')
 );
 
-CREATE INDEX IF NOT EXISTS idx_core_profiles_platform_username ON core.profiles(platform, username);
-
-CREATE TABLE IF NOT EXISTS core.relationships (
+CREATE TABLE IF NOT EXISTS red_x.relationships (
   id                  BIGSERIAL PRIMARY KEY,
-  platform            core.platform_enum NOT NULL,
-  owner_profile_id    BIGINT NOT NULL REFERENCES core.profiles(id) ON DELETE CASCADE,
-  related_profile_id  BIGINT NOT NULL REFERENCES core.profiles(id) ON DELETE CASCADE,
-  rel_type            core.rel_type_enum NOT NULL,
+  platform            red_x.platform_enum NOT NULL DEFAULT 'x',
+  owner_profile_id    BIGINT NOT NULL REFERENCES red_x.profiles(id) ON DELETE CASCADE,
+  related_profile_id  BIGINT NOT NULL REFERENCES red_x.profiles(id) ON DELETE CASCADE,
+  rel_type            red_x.rel_type_enum NOT NULL,
   collected_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  CONSTRAINT uq_core_relationships UNIQUE (platform, owner_profile_id, related_profile_id, rel_type)
+  CONSTRAINT uq_relationship_x UNIQUE (platform, owner_profile_id, related_profile_id, rel_type),
+  CONSTRAINT chk_relationships_platform_x CHECK (platform = 'x')
 );
 
-CREATE INDEX IF NOT EXISTS idx_core_relationships_owner_type ON core.relationships(owner_profile_id, rel_type);
-CREATE INDEX IF NOT EXISTS idx_core_relationships_related_type ON core.relationships(related_profile_id, rel_type);
-
-CREATE TABLE IF NOT EXISTS core.posts (
+CREATE TABLE IF NOT EXISTS red_x.posts (
   id               BIGSERIAL PRIMARY KEY,
-  platform         core.platform_enum NOT NULL,
-  owner_profile_id BIGINT NOT NULL REFERENCES core.profiles(id) ON DELETE CASCADE,
+  platform         red_x.platform_enum NOT NULL DEFAULT 'x',
+  owner_profile_id BIGINT NOT NULL REFERENCES red_x.profiles(id) ON DELETE CASCADE,
   post_url         TEXT NOT NULL,
   created_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  CONSTRAINT uq_core_posts UNIQUE (platform, post_url)
+  CONSTRAINT uq_posts_x UNIQUE (platform, post_url),
+  CONSTRAINT chk_posts_platform_x CHECK (platform = 'x')
 );
 
-CREATE INDEX IF NOT EXISTS idx_core_posts_owner ON core.posts(owner_profile_id);
-
-CREATE TABLE IF NOT EXISTS core.comments (
+CREATE TABLE IF NOT EXISTS red_x.comments (
   id                    BIGSERIAL PRIMARY KEY,
-  post_id               BIGINT NOT NULL REFERENCES core.posts(id) ON DELETE CASCADE,
-  commenter_profile_id  BIGINT NOT NULL REFERENCES core.profiles(id) ON DELETE CASCADE,
+  post_id               BIGINT NOT NULL REFERENCES red_x.posts(id) ON DELETE CASCADE,
+  commenter_profile_id  BIGINT NOT NULL REFERENCES red_x.profiles(id) ON DELETE CASCADE,
   first_seen_at         TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  CONSTRAINT uq_core_comments UNIQUE (post_id, commenter_profile_id)
+  CONSTRAINT uq_comments_x UNIQUE (post_id, commenter_profile_id)
 );
 
-CREATE TABLE IF NOT EXISTS core.reactions (
+-- reactions (creada por migración; dejamos IF NOT EXISTS)
+CREATE TABLE IF NOT EXISTS red_x.reactions (
   id                  BIGSERIAL PRIMARY KEY,
-  post_id             BIGINT NOT NULL REFERENCES core.posts(id) ON DELETE CASCADE,
-  reactor_profile_id  BIGINT NOT NULL REFERENCES core.profiles(id) ON DELETE CASCADE,
+  post_id             BIGINT NOT NULL REFERENCES red_x.posts(id) ON DELETE CASCADE,
+  reactor_profile_id  BIGINT NOT NULL REFERENCES red_x.profiles(id) ON DELETE CASCADE,
   reaction_type       TEXT,
   first_seen_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  CONSTRAINT uq_core_reactions UNIQUE (post_id, reactor_profile_id)
+  CONSTRAINT uq_reactions_x UNIQUE (post_id, reactor_profile_id)
 );
 
-CREATE INDEX IF NOT EXISTS idx_core_reactions_post ON core.reactions(post_id);
-CREATE INDEX IF NOT EXISTS idx_core_reactions_reactor ON core.reactions(reactor_profile_id);
+CREATE INDEX IF NOT EXISTS idx_x_profiles_platform_username ON red_x.profiles(platform, username);
+CREATE INDEX IF NOT EXISTS idx_x_relationships_owner_type ON red_x.relationships(owner_profile_id, rel_type);
+CREATE INDEX IF NOT EXISTS idx_x_posts_owner ON red_x.posts(owner_profile_id);
 
--- Graph sessions (autosave / cached layouts)
-CREATE TABLE IF NOT EXISTS core.graph_sessions (
-  id               UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  owner_platform   core.platform_enum NOT NULL,
-  owner_username   TEXT NOT NULL,
-  elements         JSONB NOT NULL,
-  style            JSONB,
-  layout           JSONB,
-  elements_path    TEXT,
-  updated_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+-- ======================== red_instagram ========================
+CREATE TABLE IF NOT EXISTS red_instagram.profiles (
+  id          BIGSERIAL PRIMARY KEY,
+  platform    red_instagram.platform_enum NOT NULL DEFAULT 'instagram',
+  username    TEXT NOT NULL,
+  full_name   TEXT,
+  profile_url TEXT,
+  photo_url   TEXT,
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  CONSTRAINT uq_profiles_ig UNIQUE (platform, username),
+  CONSTRAINT chk_profiles_platform_ig CHECK (platform = 'instagram')
+);
+
+CREATE TABLE IF NOT EXISTS red_instagram.relationships (
+  id                  BIGSERIAL PRIMARY KEY,
+  platform            red_instagram.platform_enum NOT NULL DEFAULT 'instagram',
+  owner_profile_id    BIGINT NOT NULL REFERENCES red_instagram.profiles(id) ON DELETE CASCADE,
+  related_profile_id  BIGINT NOT NULL REFERENCES red_instagram.profiles(id) ON DELETE CASCADE,
+  rel_type            red_instagram.rel_type_enum NOT NULL,
+  collected_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  CONSTRAINT uq_relationship_ig UNIQUE (platform, owner_profile_id, related_profile_id, rel_type),
+  CONSTRAINT chk_relationships_platform_ig CHECK (platform = 'instagram')
+);
+
+CREATE TABLE IF NOT EXISTS red_instagram.posts (
+  id               BIGSERIAL PRIMARY KEY,
+  platform         red_instagram.platform_enum NOT NULL DEFAULT 'instagram',
+  owner_profile_id BIGINT NOT NULL REFERENCES red_instagram.profiles(id) ON DELETE CASCADE,
+  post_url         TEXT NOT NULL,
   created_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  CONSTRAINT uq_core_graph_sessions UNIQUE (owner_platform, owner_username)
+  CONSTRAINT uq_posts_ig UNIQUE (platform, post_url),
+  CONSTRAINT chk_posts_platform_ig CHECK (platform = 'instagram')
 );
 
-CREATE INDEX IF NOT EXISTS idx_core_graph_sessions_elements_path ON core.graph_sessions(elements_path);
+CREATE TABLE IF NOT EXISTS red_instagram.comments (
+  id                    BIGSERIAL PRIMARY KEY,
+  post_id               BIGINT NOT NULL REFERENCES red_instagram.posts(id) ON DELETE CASCADE,
+  commenter_profile_id  BIGINT NOT NULL REFERENCES red_instagram.profiles(id) ON DELETE CASCADE,
+  first_seen_at         TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  CONSTRAINT uq_comments_ig UNIQUE (post_id, commenter_profile_id)
+);
+
+CREATE TABLE IF NOT EXISTS red_instagram.reactions (
+  id                  BIGSERIAL PRIMARY KEY,
+  post_id             BIGINT NOT NULL REFERENCES red_instagram.posts(id) ON DELETE CASCADE,
+  reactor_profile_id  BIGINT NOT NULL REFERENCES red_instagram.profiles(id) ON DELETE CASCADE,
+  reaction_type       TEXT,
+  first_seen_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  CONSTRAINT uq_reactions_ig UNIQUE (post_id, reactor_profile_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_ig_profiles_platform_username ON red_instagram.profiles(platform, username);
+CREATE INDEX IF NOT EXISTS idx_ig_relationships_owner_type ON red_instagram.relationships(owner_profile_id, rel_type);
+CREATE INDEX IF NOT EXISTS idx_ig_posts_owner ON red_instagram.posts(owner_profile_id);
+
+-- ======================== red_facebook ========================
+CREATE TABLE IF NOT EXISTS red_facebook.profiles (
+  id          BIGSERIAL PRIMARY KEY,
+  platform    red_facebook.platform_enum NOT NULL DEFAULT 'facebook',
+  username    TEXT NOT NULL,
+  full_name   TEXT,
+  profile_url TEXT,
+  photo_url   TEXT,
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  CONSTRAINT uq_profiles_fb UNIQUE (platform, username),
+  CONSTRAINT chk_profiles_platform_fb CHECK (platform = 'facebook')
+);
+
+CREATE TABLE IF NOT EXISTS red_facebook.relationships (
+  id                  BIGSERIAL PRIMARY KEY,
+  platform            red_facebook.platform_enum NOT NULL DEFAULT 'facebook',
+  owner_profile_id    BIGINT NOT NULL REFERENCES red_facebook.profiles(id) ON DELETE CASCADE,
+  related_profile_id  BIGINT NOT NULL REFERENCES red_facebook.profiles(id) ON DELETE CASCADE,
+  rel_type            red_facebook.rel_type_enum NOT NULL,
+  collected_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  CONSTRAINT uq_relationship_fb UNIQUE (platform, owner_profile_id, related_profile_id, rel_type),
+  CONSTRAINT chk_relationships_platform_fb CHECK (platform = 'facebook')
+);
+
+CREATE TABLE IF NOT EXISTS red_facebook.posts (
+  id               BIGSERIAL PRIMARY KEY,
+  platform         red_facebook.platform_enum NOT NULL DEFAULT 'facebook',
+  owner_profile_id BIGINT NOT NULL REFERENCES red_facebook.profiles(id) ON DELETE CASCADE,
+  post_url         TEXT NOT NULL,
+  created_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  CONSTRAINT uq_posts_fb UNIQUE (platform, post_url),
+  CONSTRAINT chk_posts_platform_fb CHECK (platform = 'facebook')
+);
+
+CREATE TABLE IF NOT EXISTS red_facebook.comments (
+  id                    BIGSERIAL PRIMARY KEY,
+  post_id               BIGINT NOT NULL REFERENCES red_facebook.posts(id) ON DELETE CASCADE,
+  commenter_profile_id  BIGINT NOT NULL REFERENCES red_facebook.profiles(id) ON DELETE CASCADE,
+  first_seen_at         TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  CONSTRAINT uq_comments_fb UNIQUE (post_id, commenter_profile_id)
+);
+
+CREATE TABLE IF NOT EXISTS red_facebook.reactions (
+  id                  BIGSERIAL PRIMARY KEY,
+  post_id             BIGINT NOT NULL REFERENCES red_facebook.posts(id) ON DELETE CASCADE,
+  reactor_profile_id  BIGINT NOT NULL REFERENCES red_facebook.profiles(id) ON DELETE CASCADE,
+  reaction_type       TEXT,
+  first_seen_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  CONSTRAINT uq_reactions_fb UNIQUE (post_id, reactor_profile_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_fb_profiles_platform_username ON red_facebook.profiles(platform, username);
+CREATE INDEX IF NOT EXISTS idx_fb_relationships_owner_type ON red_facebook.relationships(owner_profile_id, rel_type);
+CREATE INDEX IF NOT EXISTS idx_fb_posts_owner ON red_facebook.posts(owner_profile_id);
 
 COMMIT;
 
--- Cleanup legacy helper function if it exists
-DROP FUNCTION IF EXISTS _add_enum_value_if_not_exists(text, text, text);
-
--- Optional: leave `public` empty; use `core` as working schema going forward.
--- Remove any remaining legacy schemas if necessary
-DROP SCHEMA IF EXISTS red_x CASCADE;
-DROP SCHEMA IF EXISTS red_instagram CASCADE;
-DROP SCHEMA IF EXISTS red_facebook CASCADE;
 -- ============================================================
--- End of unified schema
+-- Fin schema_merged.sql
 -- ============================================================

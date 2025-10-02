@@ -37,17 +37,6 @@ from src.scrapers.x.scraper import (
 REL_FOLLOWER = 'seguidor'
 REL_FOLLOWING = 'seguido'
 REL_FRIEND = 'amigo'
-REL_COMMENTED = 'comentó'
-REL_REACTED = 'reaccionó'
-
-# Mapping Spanish API relation types -> DB enum values
-DB_REL_MAPPING = {
-    REL_FOLLOWER: 'follower',
-    REL_FOLLOWING: 'following',
-    REL_FRIEND: 'friend',
-    REL_COMMENTED: 'commented',
-    REL_REACTED: 'reacted',
-}
 
 MAX_ROOTS = 5  # configurable in future
 
@@ -62,11 +51,10 @@ async def multi_scrape_execute(requests: List[Dict[str, Any]]) -> Dict[str, Any]
     for r in requests:
         platform = r.get('platform')
         username = normalize_username(r.get('username'))
-        # Accept max_posts (new) or legacy max_photos / max_fotos fallback
-        max_posts = r.get('max_posts') or r.get('max_photos') or r.get('max_fotos') or 5
+        max_fotos = r.get('max_fotos') or r.get('max_fotos') or 5
         if not valid_username(username):
             raise HTTPException(status_code=422, detail={"code":"VALIDATION_ERROR", "message": f"Invalid username: {username}"})
-        norm_requests.append({"platform": platform, "username": username, "max_posts": max_posts})
+        norm_requests.append({"platform": platform, "username": username, "max_fotos": max_fotos})
 
     # Sequential (F1) - later: parallel with semaphores
     agg = Aggregator()
@@ -75,7 +63,7 @@ async def multi_scrape_execute(requests: List[Dict[str, Any]]) -> Dict[str, Any]
         for req in norm_requests:
             platform = req['platform']
             username = req['username']
-            max_posts = req['max_posts']
+            max_photos = req['max_fotos']
 
             storage_state = storage_state_for(platform)
             if not storage_state:
@@ -85,15 +73,15 @@ async def multi_scrape_execute(requests: List[Dict[str, Any]]) -> Dict[str, Any]
             context = await browser.new_context(storage_state=storage_state)
             page = await context.new_page()
             try:
-                root_profile, followers, following, friends, commenters, reactors = await _scrape_one(platform, username, page, max_posts)
+                root_profile, followers, following, friends, commenters, reactors = await _scrape_one(platform, username, page, max_photos)
                 # Add root profile
                 agg.add_root(make_profile(platform, root_profile['username'], root_profile.get('full_name'), root_profile.get('profile_url'), root_profile.get('photo_url'), (platform, username)))
                 # Normalize and add lists
                 _ingest_list(agg, platform, username, followers, direction='followers')
                 _ingest_list(agg, platform, username, following, direction='following')
                 _ingest_list(agg, platform, username, friends, direction='friends')
-                _ingest_activity_list(agg, platform, username, commenters, rel_type=REL_COMMENTED)
-                _ingest_activity_list(agg, platform, username, reactors, rel_type=REL_REACTED)
+                _ingest_activity_list(agg, platform, username, commenters, rel_type='comentó')
+                _ingest_activity_list(agg, platform, username, reactors, rel_type='reaccionó')
 
                 # Root-root relations (optional F1): simple detection (A follows B & B follows A handled naturally if both roots present)
                 # After adding all roots we could post-process, but leaving natural accumulation for now.
@@ -105,30 +93,14 @@ async def multi_scrape_execute(requests: List[Dict[str, Any]]) -> Dict[str, Any]
                             # Root
                             upsert_profile(cur, platform, username, root_profile.get('full_name'), root_profile.get('profile_url'), root_profile.get('photo_url'))
                             # Others
-                            for rel_item, rtype in (
-                                [(x, REL_FOLLOWER) for x in followers] +
-                                [(x, REL_FOLLOWING) for x in following] +
-                                [(x, REL_FRIEND) for x in friends] +
-                                [(x, REL_COMMENTED) for x in commenters] +
-                                [(x, REL_REACTED) for x in reactors]
-                            ):
+                            for rel_item in (followers + following + friends + commenters + reactors):
                                 norm = _normalize_user_item(platform, rel_item)
                                 fu = norm.get('username')
                                 if fu and valid_username(fu):
                                     upsert_profile(cur, platform, fu, norm.get('full_name'), norm.get('profile_url'), norm.get('photo_url'))
-                                    # Add relationship based on type (DB mapping)
-                                    db_type = DB_REL_MAPPING.get(rtype)
-                                    if db_type:
-                                        # Determine direction (consistent with API semantics)
-                                        if rtype == REL_FOLLOWER:
-                                            add_relationship(cur, platform, fu, username, db_type)
-                                        elif rtype == REL_FOLLOWING:
-                                            add_relationship(cur, platform, username, fu, db_type)
-                                        elif rtype == REL_FRIEND:
-                                            add_relationship(cur, platform, username, fu, db_type)
-                                            add_relationship(cur, platform, fu, username, db_type)
-                                        elif rtype in (REL_COMMENTED, REL_REACTED):
-                                            add_relationship(cur, platform, fu, username, db_type)
+                                    # Relationship direction mapping for DB english types
+                                    if norm.get('_rel_type_db'):
+                                        add_relationship(cur, platform, norm.get('_rel_source_db'), norm.get('_rel_target_db'), norm.get('_rel_type_db'))
                             conn.commit()
                 except Exception:
                     pass
@@ -141,7 +113,7 @@ async def multi_scrape_execute(requests: List[Dict[str, Any]]) -> Dict[str, Any]
     return agg.build_payload(roots_requested=len(norm_requests))
 
 
-async def _scrape_one(platform: str, username: str, page, max_posts: int):
+async def _scrape_one(platform: str, username: str, page, max_photos: int):
     perfil_url = build_profile_url(platform, username)
     if platform == 'facebook':
         datos = await obtener_datos_usuario_facebook(page, perfil_url)
@@ -155,8 +127,8 @@ async def _scrape_one(platform: str, username: str, page, max_posts: int):
         followers = await fb_scrap_followers(page, perfil_url, root_profile['username'])
         following = await fb_scrap_followed(page, perfil_url, root_profile['username'])
         friends = await fb_scrap_friends(page, perfil_url, root_profile['username'])
-        commenters = await fb_scrap_comments(page, perfil_url, root_profile['username'], max_fotos=max_posts)
-        reactors = await fb_scrap_reactions(page, perfil_url, root_profile['username'], max_fotos=max_posts, incluir_comentarios=False)
+        commenters = await fb_scrap_comments(page, perfil_url, root_profile['username'], max_fotos=max_photos)
+        reactors = await fb_scrap_reactions(page, perfil_url, root_profile['username'], max_fotos=max_photos, incluir_comentarios=False)
     elif platform == 'instagram':
         datos = await ig_obtener_datos(page, perfil_url)
         root_profile = {
@@ -169,8 +141,8 @@ async def _scrape_one(platform: str, username: str, page, max_posts: int):
         followers = await ig_scrap_followers(page, perfil_url, root_profile['username'])
         following = await ig_scrap_followed(page, perfil_url, root_profile['username'])
         friends = []
-        commenters = await ig_scrap_commenters(page, perfil_url, root_profile['username'], max_posts=max_posts)
-        reactors = await ig_scrap_reactions(page, perfil_url, root_profile['username'], max_posts=max_posts)
+        commenters = await ig_scrap_commenters(page, perfil_url, root_profile['username'], max_posts=max_photos)
+        reactors = await ig_scrap_reactions(page, perfil_url, root_profile['username'], max_posts=max_photos)
     elif platform == 'x':
         datos = await x_obtener_datos(page, perfil_url)
         root_profile = {
@@ -183,7 +155,7 @@ async def _scrape_one(platform: str, username: str, page, max_posts: int):
         followers = await x_scrap_followers(page, perfil_url, root_profile['username'])
         following = await x_scrap_followed(page, perfil_url, root_profile['username'])
         friends = []
-        commenters = await x_scrap_commenters(page, perfil_url, root_profile['username'], max_posts=max_posts)
+        commenters = await x_scrap_commenters(page, perfil_url, root_profile['username'], max_posts=max_photos)
         reactors = []
     else:
         raise HTTPException(status_code=400, detail={"code":"PLATFORM_UNSUPPORTED", "message": platform})

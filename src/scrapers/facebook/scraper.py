@@ -6,6 +6,7 @@ import time
 from src.scrapers.facebook.config import FACEBOOK_CONFIG
 from src.scrapers.facebook.utils import normalize_profile_url, get_text, get_attr, absolute_url_keep_query
 from src.utils.dom import find_scroll_container, scroll_collect
+from src.scrapers.scrolling import scroll_loop
 from src.utils.list_parser import build_user_item
 from src.utils.common import limpiar_url
 from src.utils.url import normalize_input_url, normalize_post_url
@@ -105,47 +106,42 @@ async def navegar_a_lista(page, perfil_url: str, lista: str) -> bool:
 
 # ---------- Extracción genérica de usuarios en listados ----------
 async def extraer_usuarios_listado(page, tipo_lista: str, usuario_principal: str) -> List[dict]:
-	"""Hace scroll y extrae tarjetas de usuarios con early-exit.
-	Sprint1 optimizaciones: early exit si 0 resultados tras 2 scrolls, reducción de waits, métricas.
-	"""
+	"""Extracción de usuarios usando scroll_loop genérico (Fase1: refactor)."""
 	usuarios: Dict[str, dict] = {}
-	start_phase = time.time()
 	cfg = FACEBOOK_CONFIG.get('scroll', {})
 	max_scrolls_cfg = int(cfg.get('max_scrolls', 60))
-	max_scrolls = min(max_scrolls_cfg, 40)  # cap preventivo
-	max_no_new = 3
-	pause_ms_base = 900
-	logger.info(f"{_ts()} facebook.list start type={tipo_lista} max_scrolls={max_scrolls}")
+	max_scrolls = min(max_scrolls_cfg, 40)
 
-	no_new_seq = 0
-	for scroll_idx in range(max_scrolls):
+	async def process_once() -> int:
 		before = len(usuarios)
-		try:
-			await procesar_tarjetas_usuario(page, usuarios, usuario_principal)
-		except Exception as e:
-			logger.debug(f"{_ts()} facebook.list process_error type={tipo_lista} err={e}")
-		new_count = len(usuarios) - before
-		if new_count == 0:
-			no_new_seq += 1
-		else:
-			no_new_seq = 0
-		logger.info(f"{_ts()} facebook.list progress type={tipo_lista} scroll={scroll_idx+1} total={len(usuarios)} new={new_count} no_new_seq={no_new_seq}")
-		# Early exit empty
-		if len(usuarios) == 0 and no_new_seq >= 2:
-			logger.info(f"{_ts()} facebook.list early_exit empty type={tipo_lista} duration_ms={(time.time()-start_phase)*1000:.0f}")
-			break
-		# Stagnation
-		if no_new_seq >= max_no_new:
-			logger.info(f"{_ts()} facebook.list early_exit stagnation type={tipo_lista} duration_ms={(time.time()-start_phase)*1000:.0f}")
-			break
-		# Scroll
+		await procesar_tarjetas_usuario(page, usuarios, usuario_principal)
+		return len(usuarios) - before
+
+	async def do_scroll():
 		try:
 			await page.evaluate("window.scrollBy(0, document.documentElement.clientHeight * 0.7)")
 		except Exception:
 			pass
-		await page.wait_for_timeout(pause_ms_base)
 
-	logger.info(f"{_ts()} facebook.list end type={tipo_lista} total={len(usuarios)} duration_ms={(time.time()-start_phase)*1000:.0f}")
+	async def bottom_check() -> bool:
+		try:
+			return await page.evaluate("() => (window.innerHeight + window.pageYOffset) >= (document.body.scrollHeight - 800)")
+		except Exception:
+			return False
+
+	stats = await scroll_loop(
+		process_once=process_once,
+		do_scroll=do_scroll,
+		max_scrolls=max_scrolls,
+		pause_ms=900,
+		stagnation_limit=3,
+		empty_limit=2,
+		bottom_check=bottom_check,
+		adaptive=True,
+		adaptive_decay_threshold=0.35,
+		log_prefix=f"facebook.list type={tipo_lista}"
+	)
+	logger.info(f"{_ts()} facebook.list done type={tipo_lista} total={len(usuarios)} duration_ms={stats['duration_ms']} reason={stats['reason']}")
 	return list(usuarios.values())
 
 
