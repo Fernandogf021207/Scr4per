@@ -50,5 +50,6 @@ class GraphSessionIn(BaseModel):
 class ExportInput(BaseModel):
     perfil_objetivo: Dict[str, Any] = Field(alias="Perfil objetivo")
     perfiles_relacionados: List[Dict[str, Any]] = Field(alias="Perfiles relacionados")
-    class Config:
-        allow_population_by_field_name = True
+    model_config = {
+        'populate_by_name': True,
+    }
