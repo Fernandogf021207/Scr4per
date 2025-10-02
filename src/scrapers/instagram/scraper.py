@@ -9,6 +9,11 @@ from src.utils.list_parser import build_user_item
 from src.utils.url import normalize_post_url
 import os
 import httpx
+from src.scrapers.resource_blocking import start_list_blocking  # added
+from src.scrapers.scrolling import scroll_loop  # added
+from src.scrapers.concurrency import run_limited  # added
+from src.scrapers.selector_registry import get_selectors, registry_version  # added
+from src.scrapers.errors import classify_page_state, ErrorCode, ScrapeError  # added
 
 logger = logging.getLogger(__name__)
 
@@ -100,45 +105,84 @@ async def obtener_datos_usuario_principal(page, perfil_url):
     }
 
 async def extraer_usuarios_instagram(page, tipo_lista="seguidores", usuario_principal=""):
-    """Extraer usuarios de una lista (Sprint1: early exit, métricas)."""
+    """Extraer usuarios de una lista usando scroll_loop (Fase2: migración).
+
+    Ajuste: evitar bottom false-positive en listas largas que sólo cargan un chunk inicial.
+    Estrategia: exigir al menos 3 iteraciones antes de permitir bottom_check y reducir margen.
+    """
     logger.info(f"{_ts()} instagram.list start type={tipo_lista}")
     usuarios_dict = {}
+    blocker = await start_list_blocking(page, 'instagram', phase=f'list.{tipo_lista}')
+    t0 = time.time()
+
     container = await find_scroll_container(page)
-    scroll_attempts = 0
-    max_scrolls = 40
-    no_new_users_count = 0
-    max_no_new_users = 4
-    empty_seq_needed = 2
-    phase_start = time.time()
-    while scroll_attempts < max_scrolls and no_new_users_count < max_no_new_users:
+    iter_state = {'count': 0}
+
+    async def process_once() -> int:
+        before = len(usuarios_dict)
+        await procesar_usuarios_en_modal(page, usuarios_dict, usuario_principal, tipo_lista)
+        iter_state['count'] += 1
+        return len(usuarios_dict) - before
+
+    async def do_scroll():
         try:
-            current_user_count = len(usuarios_dict)
             if container:
-                await scroll_element(container, 700)
+                await scroll_element(container, 900)
             else:
-                await scroll_window(page, 550)
-            await page.wait_for_timeout(900)
-            await procesar_usuarios_en_modal(page, usuarios_dict, usuario_principal, tipo_lista)
-            new_users = len(usuarios_dict) - current_user_count
-            if new_users == 0:
-                no_new_users_count += 1
+                await scroll_window(page, 800)
+        except Exception:
+            pass
+
+    async def bottom_check() -> bool:
+        # No considerar bottom hasta al menos 3 iteraciones (1er chunk + 2 cargas adicionales potenciales)
+        if iter_state['count'] < 3:
+            return False
+        try:
+            if container:
+                is_bottom, metrics = await page.evaluate("""
+                    el => {
+                        const st = el.scrollTop; const ch = el.clientHeight; const sh = el.scrollHeight;
+                        return [ (st + ch) >= (sh - 150), {st, ch, sh} ];
+                    }
+                """, container)
             else:
-                no_new_users_count = 0
-            logger.info(f"{_ts()} instagram.list progress type={tipo_lista} scroll={scroll_attempts+1} total={len(usuarios_dict)} new={new_users} no_new_seq={no_new_users_count}")
-            scroll_attempts += 1
-            if len(usuarios_dict) == 0 and no_new_users_count >= empty_seq_needed:
-                logger.info(f"{_ts()} instagram.list early_exit empty type={tipo_lista} duration_ms={(time.time()-phase_start)*1000:.0f}")
-                break
-            if no_new_users_count >= max_no_new_users:
-                logger.info(f"{_ts()} instagram.list early_exit stagnation type={tipo_lista} duration_ms={(time.time()-phase_start)*1000:.0f}")
-                break
-            if scroll_attempts % 12 == 0:
-                await page.wait_for_timeout(1700)
-        except Exception as e:
-            logger.warning(f"instagram.list error scroll={scroll_attempts} err={e}")
-            no_new_users_count += 1
-            await page.wait_for_timeout(700)
-    logger.info(f"{_ts()} instagram.list end type={tipo_lista} scrolls={scroll_attempts} unique={len(usuarios_dict)} duration_ms={(time.time()-phase_start)*1000:.0f}")
+                is_bottom, metrics = await page.evaluate("""
+                    () => {
+                        const st = window.pageYOffset || document.documentElement.scrollTop; 
+                        const ch = window.innerHeight; 
+                        const sh = document.documentElement.scrollHeight || document.body.scrollHeight;
+                        return [ (st + ch) >= (sh - 200), {st, ch, sh} ];
+                    }
+                """)
+            if is_bottom:
+                logger.info(f"{_ts()} instagram.list bottom_candidate iter={iter_state['count']} metrics={metrics} total={len(usuarios_dict)}")
+            return is_bottom
+        except Exception:
+            return False
+
+    stats = await scroll_loop(
+        process_once=process_once,
+        do_scroll=do_scroll,
+        max_scrolls=40,
+        pause_ms=900,
+        stagnation_limit=6,  # subir umbral para dar chance a nuevas cargas
+        empty_limit=2,
+        bottom_check=bottom_check,
+        adaptive=True,
+        adaptive_decay_threshold=0.30,
+        log_prefix=f"instagram.list type={tipo_lista}",
+        timeout_ms=35000,
+    )
+
+    await blocker.stop()
+    # Señal heurística: si total < 30 y reason=bottom en pocas iteraciones -> posible truncamiento
+    if stats['reason'] == 'bottom' and stats.get('iterations', 0) <= 4 and len(usuarios_dict) < 30:
+        logger.warning(f"{_ts()} instagram.list suspicion=EARLY_BOTTOM type={tipo_lista} total={len(usuarios_dict)} iter={stats.get('iterations')} reason={stats['reason']}")
+    if stats['reason'] == 'timeout':
+        logger.warning(f"{_ts()} instagram.list error.code=TIMEOUT type={tipo_lista} duration_ms={stats['duration_ms']}")
+    if len(usuarios_dict) == 0:
+        logger.warning(f"{_ts()} instagram.list error.code=EMPTY_LIST type={tipo_lista} reason={stats['reason']}")
+    logger.info(f"{_ts()} instagram.list end type={tipo_lista} total={len(usuarios_dict)} duration_ms={stats['duration_ms']} reason={stats['reason']} scrolls={stats['iterations']} started_at={(t0):.0f}")
     return list(usuarios_dict.values())
 
 async def procesar_usuarios_en_modal(page, usuarios_dict, usuario_principal, tipo_lista):
@@ -222,39 +266,50 @@ async def procesar_usuarios_en_modal(page, usuarios_dict, usuario_principal, tip
         logger.warning(f"Error procesando usuarios en modal: {e}")
 
 async def navegar_a_lista_instagram(page, perfil_url, tipo_lista="followers"):
-    """Navegar a la lista de seguidores o seguidos en Instagram (refactor)."""
+    """Navegar a la lista de seguidores o seguidos en Instagram (refactor v2 con registry + error codes)."""
+    phase = 'nav_list'
+    platform = 'instagram'
     try:
         perfil_url = normalize_input_url('instagram', perfil_url)
-        await page.goto(perfil_url)
-        await page.wait_for_timeout(3000)
+        await page.goto(perfil_url, timeout=10_000)
+        try:
+            await page.wait_for_selector('header', timeout=3000)
+        except Exception:
+            pass
+        await page.wait_for_timeout(800)
+
         if tipo_lista == "followers":
-            selectores_enlace = [
-                'a[href*="/followers/"]',
-                'a:has-text("seguidores")',
-                'a:has-text("followers")',
-                'header a[href*="followers"]'
-            ]
+            selectores_enlace = get_selectors(platform, 'lists.followers_link')
             nombre_lista = "seguidores"
         else:
-            selectores_enlace = [
-                'a[href*="/following/"]',
-                'a:has-text("seguidos")',
-                'a:has-text("following")',
-                'header a[href*="following"]'
-            ]
+            selectores_enlace = get_selectors(platform, 'lists.following_link')
             nombre_lista = "seguidos"
-        logger.info(f"{_ts()} instagram.nav finding list={nombre_lista}")
+        logger.info(f"{_ts()} instagram.nav finding list={nombre_lista} registry_ver={registry_version(platform)}")
         enlace_lista = None
         for selector in selectores_enlace:
-            enlace_lista = await page.query_selector(selector)
-            if enlace_lista:
-                break
+            try:
+                enlace_lista = await page.query_selector(selector)
+                if enlace_lista:
+                    break
+            except Exception:
+                continue
         if not enlace_lista:
-            logger.info(f"{_ts()} instagram.nav link_not_found name={nombre_lista}")
+            # Clasificar estado de la página
+            try:
+                body_text = await page.inner_text('body')
+            except Exception:
+                body_text = ''
+            state = classify_page_state(platform, body_text) or ErrorCode.SELECTOR_MISS
+            logger.warning(f"{_ts()} instagram.nav link_not_found list={nombre_lista} code={state.value}")
             return False
         logger.info(f"{_ts()} instagram.nav clicking list={nombre_lista}")
         await enlace_lista.click()
-        await page.wait_for_timeout(3000)
+        # Esperar apertura de dialog (timeout fase)
+        try:
+            await page.wait_for_selector('div[role="dialog"]', timeout=5000)
+        except Exception:
+            pass
+        await page.wait_for_timeout(1200)
         return True
     except Exception as e:
         logger.warning(f"{_ts()} instagram.nav error list={tipo_lista} error={e}")
@@ -266,6 +321,8 @@ async def scrap_seguidores(page, perfil_url, username):
     try:
         if await navegar_a_lista_instagram(page, perfil_url, "followers"):
             seguidores = await extraer_usuarios_instagram(page, "seguidores", username)
+            if len(seguidores) == 0:
+                logger.warning(f"{_ts()} instagram.followers error.code=EMPTY_LIST")
             logger.info(f"{_ts()} instagram.followers count={len(seguidores)}")
             return seguidores
         else:
@@ -281,6 +338,8 @@ async def scrap_seguidos(page, perfil_url, username):
     try:
         if await navegar_a_lista_instagram(page, perfil_url, "following"):
             seguidos = await extraer_usuarios_instagram(page, "seguidos", username)
+            if len(seguidos) == 0:
+                logger.warning(f"{_ts()} instagram.following error.code=EMPTY_LIST")
             logger.info(f"{_ts()} instagram.following count={len(seguidos)}")
             return seguidos
         else:
@@ -438,19 +497,42 @@ async def _abrir_liked_by_y_extraer_usuarios(page, post_url: str):
         return []
 
 async def scrap_reacciones_instagram(page, perfil_url: str, username: str, max_posts: int = 5):
-    """Scrapea usuarios que dieron like (liked_by) en los últimos posts."""
+    """Scrapea usuarios que dieron like (liked_by) en los últimos posts (concurrencia limitada)."""
     try:
         perfil_url = normalize_input_url('instagram', perfil_url)
         await page.goto(perfil_url)
         await page.wait_for_timeout(1500)
         posts = await extraer_posts_del_perfil(page, max_posts=max_posts)
-        resultados = []
-        for i, post in enumerate(posts, 1):
-            likes = await _abrir_liked_by_y_extraer_usuarios(page, post)
-            resultados.extend(likes)
-            if i % 3 == 0:
-                await page.wait_for_timeout(1200)
-        return resultados
+        logger.info(f"{_ts()} instagram.likes posts_found={len(posts)} target={max_posts}")
+        if not posts:
+            return []
+
+        start = time.time()
+        # Para cada post generamos una tarea diferida que abre y extrae likes en un contexto secuencial.
+        # NOTA: El mismo 'page' no puede navegar en paralelo, idealmente se usarían nuevas pages/contextos.
+        # Aquí aplicamos concurrencia cooperativa simulada: ejecutamos en secuencia porque compartimos page.
+        # Si en el futuro se habilita crear nuevas pages, sustituir por apertura de new_page por tarea.
+
+        async def process_post(post_url: str):
+            try:
+                await page.goto(post_url)
+                await page.wait_for_timeout(2000)
+                likes = await _abrir_liked_by_y_extraer_usuarios(page, post_url)
+                logger.info(f"{_ts()} instagram.likes post_done url={post_url} likes={len(likes)}")
+                return likes
+            except Exception as e:
+                logger.warning(f"instagram.likes post_error url={post_url} error={e}")
+                return []
+
+        # Debido a limitación de un solo page, el limit >1 no ofrece beneficio real; dejamos estructura para futuro multi-page.
+        tasks_callables = [lambda u=pu: process_post(u) for pu in posts]
+        results = await run_limited(tasks_callables, limit=1, label='ig.likes')
+        aggregated = []
+        for r in results:
+            if r and r.ok and r.value:
+                aggregated.extend(r.value)
+        logger.info(f"{_ts()} instagram.likes done total_likes={len(aggregated)} duration_ms={(time.time()-start)*1000:.0f}")
+        return aggregated
     except Exception:
         return []
 
@@ -706,7 +788,7 @@ async def procesar_comentarios_en_modal(page, comentarios_dict, url_post):
                     continue
                 
                 username = href.strip('/').split('/')[0]
-                if username in ['p', 'reel', 'tv', 'stories', 'explore', 'accounts'] or username == "":
+                if username in ['p', 'reel', 'tv', 'stories', 'explore'] or username == "":
                     continue
                 
                 # Evitar duplicados
@@ -856,39 +938,35 @@ async def procesar_comentarios_en_post(page, comentarios_dict, url_post):
         logger.warning(f"Error procesando comentarios: {e}")
 
 async def scrap_comentadores_instagram(page, perfil_url, username, max_posts=5):
-    """Scrapear usuarios que comentaron los posts del usuario"""
+    """Scrapear usuarios que comentaron los posts del usuario (estructura concurrente)."""
     logger.info(f"{_ts()} instagram.comments batch_start max_posts={max_posts}")
-    
     try:
         await page.goto(perfil_url)
         await page.wait_for_timeout(3000)
-        
         urls_posts = await extraer_posts_del_perfil(page, max_posts)
-        
-        comentarios = []
-        for i, url_post in enumerate(urls_posts, 1):
-            logger.info(f"{_ts()} instagram.comments post start idx={i}/{len(urls_posts)}")
-            
-            # Intentar extracción normal primero
-            comentarios_post = await extraer_comentarios_post(page, url_post, i)
-            
-            # Si no hay comentarios, intentar con modal
+        logger.info(f"{_ts()} instagram.comments posts_found={len(urls_posts)}")
+        if not urls_posts:
+            return []
+
+        async def process_post(idx: int, url_post: str):
+            logger.info(f"{_ts()} instagram.comments post start idx={idx}/{len(urls_posts)}")
+            comentarios_post = await extraer_comentarios_post(page, url_post, idx)
             if not comentarios_post:
-                logger.info(f"{_ts()} instagram.comments modal_fallback idx={i}")
-                comentarios_post = await extraer_comentarios_en_modal(page, url_post, i)
-            
-            comentarios.extend(comentarios_post)
-            
-            # Rate limiting cada 3 posts
-            if i % 3 == 0:
-                logger.info(f"{_ts()} instagram.comments rate_pause i={i}")
-                await asyncio.sleep(3)
-            else:
-                await asyncio.sleep(2)
-        
-        logger.info(f"{_ts()} instagram.comments total={len(comentarios)}")
-        return comentarios
-        
+                logger.info(f"{_ts()} instagram.comments modal_fallback idx={idx}")
+                comentarios_post = await extraer_comentarios_en_modal(page, url_post, idx)
+            await asyncio.sleep(1.2 if idx % 3 else 2.5)
+            return comentarios_post
+
+        from src.scrapers.concurrency import run_limited
+        callables = [lambda i=i, u=u: process_post(i+1, u) for i, u in enumerate(urls_posts)]
+        # Limit 1 dado que compartimos 'page'; mantener interfaz para futura expansión multi-page.
+        results = await run_limited(callables, limit=1, label='ig.comments')
+        agg = []
+        for r in results:
+            if r and r.ok and r.value:
+                agg.extend(r.value)
+        logger.info(f"{_ts()} instagram.comments total={len(agg)} posts={len(urls_posts)}")
+        return agg
     except Exception as e:
         logger.warning(f"{_ts()} instagram.comments error={e}")
         return []

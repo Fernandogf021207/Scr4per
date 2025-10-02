@@ -11,56 +11,60 @@ from src.scrapers.x.utils import (
 )
 import time
 import logging
+from src.scrapers.resource_blocking import start_list_blocking  # added
+from src.scrapers.scrolling import scroll_loop  # added
+from src.scrapers.selector_registry import get_selectors, registry_version  # added
+from src.scrapers.errors import classify_page_state, ErrorCode  # added
 logger = logging.getLogger(__name__)
 
 def _ts():
     return time.strftime('%Y-%m-%dT%H:%M:%S', time.gmtime())
 
 async def extraer_usuarios_lista(page, tipo_lista="seguidores", rid: str | None = None):
-    """Extraer usuarios de una lista con early-exit y métricas."""
+    """Extraer usuarios de una lista usando scroll_loop (Fase2: migración)."""
     ridp = f" rid={rid}" if rid else ""
     logger.info(f"{_ts()} x.list start type={tipo_lista}{ridp}")
     usuarios_dict = {}
-    scroll_attempts = 0
-    max_scroll_attempts = 40
-    no_new_content_count = 0
-    max_no_new_content = 4
-    start = time.time()
-    try:
-        await page.wait_for_selector('div', timeout=1500)
-    except Exception:
-        await page.wait_for_timeout(500)
-    while scroll_attempts < max_scroll_attempts and no_new_content_count < max_no_new_content:
+    blocker = await start_list_blocking(page, 'x', phase=f'list.{tipo_lista}')
+    t0 = time.time()
+
+    async def process_once() -> int:
+        before = len(usuarios_dict)
+        await procesar_usuarios_en_pagina(page, usuarios_dict)
+        return len(usuarios_dict) - before
+
+    async def do_scroll():
         try:
-            current_user_count = len(usuarios_dict)
             await scroll_window(page, 0)
-            await page.wait_for_timeout(1000)
-            await procesar_usuarios_en_pagina(page, usuarios_dict)
-            if len(usuarios_dict) > current_user_count:
-                no_new_content_count = 0
-                logger.info(f"{_ts()} x.list progress type={tipo_lista} scroll={scroll_attempts+1} total={len(usuarios_dict)} new={len(usuarios_dict)-current_user_count}{ridp}")
-            else:
-                no_new_content_count += 1
-                logger.info(f"{_ts()} x.list no_new type={tipo_lista} scroll={scroll_attempts+1} seq={no_new_content_count}{ridp}")
-            
-            scroll_attempts += 1
-            if scroll_attempts % 12 == 0:
-                await page.wait_for_timeout(1700)
-            
-            is_at_bottom = await page.evaluate(
-                "() => (window.innerHeight + window.pageYOffset) >= (document.body.scrollHeight - 1000)"
-            )
-            
-            if is_at_bottom and no_new_content_count >= 3:
-                logger.info(f"{_ts()} x.list end_bottom type={tipo_lista}{ridp}")
-                break
-                
-        except Exception as e:
-            logger.warning(f"Error en scroll {scroll_attempts}: {e}")
-            no_new_content_count += 1
-            
-        await page.wait_for_timeout(800)
-    logger.info(f"{_ts()} x.list end type={tipo_lista} total={len(usuarios_dict)} scrolls={scroll_attempts} duration_ms={(time.time()-start)*1000:.0f}{ridp}")
+        except Exception:
+            pass
+
+    async def bottom_check() -> bool:
+        try:
+            return await page.evaluate("() => (window.innerHeight + window.pageYOffset) >= (document.body.scrollHeight - 1000)")
+        except Exception:
+            return False
+
+    stats = await scroll_loop(
+        process_once=process_once,
+        do_scroll=do_scroll,
+        max_scrolls=40,
+        pause_ms=1000,
+        stagnation_limit=4,
+        empty_limit=2,
+        bottom_check=bottom_check,
+        adaptive=True,
+        adaptive_decay_threshold=0.35,
+        log_prefix=f"x.list type={tipo_lista}{ridp}",
+        timeout_ms=32000,
+    )
+
+    await blocker.stop()
+    if stats['reason'] == 'timeout':
+        logger.warning(f"{_ts()} x.list error.code=TIMEOUT type={tipo_lista} duration_ms={stats['duration_ms']}{ridp}")
+    if len(usuarios_dict) == 0:
+        logger.warning(f"{_ts()} x.list error.code=EMPTY_LIST type={tipo_lista} reason={stats['reason']}{ridp}")
+    logger.info(f"{_ts()} x.list end type={tipo_lista} total={len(usuarios_dict)} duration_ms={stats['duration_ms']} reason={stats['reason']} scrolls={stats['iterations']}{ridp}")
     return list(usuarios_dict.values())
 
 async def extraer_comentadores_x(page, max_posts=10, rid: str | None = None):
@@ -255,13 +259,33 @@ async def obtener_datos_usuario_principal(page, perfil_url, rid: str | None = No
 
 async def scrap_seguidores(page, perfil_url, username, rid: str | None = None):
     ridp = f" rid={rid}" if rid else ""
-    logger.info(f"{_ts()} x.followers start{ridp}")
+    logger.info(f"{_ts()} x.followers start{ridp} registry_ver={registry_version('x')}")
     try:
         perfil_url = normalize_input_url('x', perfil_url)
         followers_url = f"{perfil_url.rstrip('/')}/followers"
-        await page.goto(followers_url)
+        await page.goto(followers_url, timeout=12_000)
         await page.wait_for_timeout(1200)
+        # Validar presencia de item selector
+        selectors_items = get_selectors('x', 'lists.list_item')
+        found_any = False
+        for sel in selectors_items:
+            try:
+                el = await page.query_selector(sel)
+                if el:
+                    found_any = True
+                    break
+            except Exception:
+                continue
+        if not found_any:
+            try:
+                body_text = await page.inner_text('body')
+            except Exception:
+                body_text = ''
+            code = classify_page_state('x', body_text) or ErrorCode.SELECTOR_MISS
+            logger.warning(f"{_ts()} x.followers no_items code={code.value}{ridp}")
         seguidores = await extraer_usuarios_lista(page, "seguidores", rid=rid)
+        if len(seguidores) == 0:
+            logger.warning(f"{_ts()} x.followers error.code=EMPTY_LIST{ridp}")
         logger.info(f"{_ts()} x.followers count={len(seguidores)}{ridp}")
         return seguidores
     except Exception as e:
@@ -270,13 +294,32 @@ async def scrap_seguidores(page, perfil_url, username, rid: str | None = None):
 
 async def scrap_seguidos(page, perfil_url, username, rid: str | None = None):
     ridp = f" rid={rid}" if rid else ""
-    logger.info(f"{_ts()} x.following start{ridp}")
+    logger.info(f"{_ts()} x.following start{ridp} registry_ver={registry_version('x')}")
     try:
         perfil_url = normalize_input_url('x', perfil_url)
         following_url = f"{perfil_url.rstrip('/')}/following"
-        await page.goto(following_url)
+        await page.goto(following_url, timeout=12_000)
         await page.wait_for_timeout(1200)
+        selectors_items = get_selectors('x', 'lists.list_item')
+        found_any = False
+        for sel in selectors_items:
+            try:
+                el = await page.query_selector(sel)
+                if el:
+                    found_any = True
+                    break
+            except Exception:
+                continue
+        if not found_any:
+            try:
+                body_text = await page.inner_text('body')
+            except Exception:
+                body_text = ''
+            code = classify_page_state('x', body_text) or ErrorCode.SELECTOR_MISS
+            logger.warning(f"{_ts()} x.following no_items code={code.value}{ridp}")
         seguidos = await extraer_usuarios_lista(page, "seguidos", rid=rid)
+        if len(seguidos) == 0:
+            logger.warning(f"{_ts()} x.following error.code=EMPTY_LIST{ridp}")
         logger.info(f"{_ts()} x.following count={len(seguidos)}{ridp}")
         return seguidos
     except Exception as e:

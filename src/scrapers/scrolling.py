@@ -5,7 +5,7 @@ from typing import Callable, Awaitable, Optional, Any, Literal
 
 logger = logging.getLogger(__name__)
 
-EarlyExitReason = Literal['empty','stagnation','bottom','max']
+EarlyExitReason = Literal['empty','stagnation','bottom','max','timeout']
 
 class ScrollStats(dict):
     @property
@@ -25,11 +25,10 @@ async def scroll_loop(
     adaptive_decay_threshold: float = 0.3,
     min_scrolls_after_decay: int = 2,
     log_prefix: str = "scroll",
+    timeout_ms: Optional[int] = None,
 ) -> ScrollStats:
     """Generic scroll loop with early-exit and optional adaptive mode.
-    process_once must return number of NEW items added this iteration.
-    do_scroll performs scrolling action.
-    bottom_check returns True if bottom likely reached.
+    Added timeout_ms: abort if total elapsed exceeds this value.
     """
     start = time.time()
     total = 0
@@ -38,6 +37,11 @@ async def scroll_loop(
     reason: EarlyExitReason | None = None
     effective_max = max_scrolls
     for i in range(max_scrolls):
+        # Timeout check at loop start
+        if timeout_ms is not None and (time.time() - start) * 1000 >= timeout_ms:
+            reason = 'timeout'
+            logger.warning(f"{log_prefix} timeout_exceeded elapsed_ms={(time.time()-start)*1000:.0f} limit_ms={timeout_ms}")
+            break
         new_items = 0
         try:
             new_items = await process_once()
@@ -86,4 +90,4 @@ async def scroll_loop(
     if reason is None:
         reason = 'max'
     logger.info(f"{log_prefix} end total={total} reason={reason} duration_ms={duration_ms}")
-    return ScrollStats(total=total, reason=reason, duration_ms=duration_ms, scrolls=i+1)
+    return ScrollStats(total=total, reason=reason, duration_ms=duration_ms, scrolls=i+1, iterations=i+1)

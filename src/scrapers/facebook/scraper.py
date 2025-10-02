@@ -10,6 +10,10 @@ from src.scrapers.scrolling import scroll_loop
 from src.utils.list_parser import build_user_item
 from src.utils.common import limpiar_url
 from src.utils.url import normalize_input_url, normalize_post_url
+from src.scrapers.resource_blocking import start_list_blocking  # added
+from src.scrapers.concurrency import run_limited  # added
+from src.scrapers.selector_registry import get_selectors, registry_version  # added
+from src.scrapers.errors import classify_page_state, ErrorCode  # added
 
 logger = logging.getLogger(__name__)
 
@@ -77,72 +81,99 @@ async def obtener_datos_usuario_facebook(page, perfil_url: str) -> dict:
 
 # ---------- Navegación a listas ----------
 async def navegar_a_lista(page, perfil_url: str, lista: str) -> bool:
-	"""Navega a /friends_all, /followers o /followed según lista."""
-	suffix = {
-		'friends_all': 'friends_all',
-		'followers': 'followers',
-		'followed': 'following',  # Facebook usa /following para las páginas/people seguidas
-	}.get(lista, lista)
+    """Navega a /friends_all, /followers o /followed según lista (registry + error handling)."""
+    suffix = {
+        'friends_all': 'friends_all',
+        'followers': 'followers',
+        'followed': 'following',
+    }.get(lista, lista)
 
-	# Normalizar URL base del perfil
-	perfil_url = normalize_input_url('facebook', perfil_url)
-	base = perfil_url.rstrip('/')
-	target = f"{base}/{suffix}/"
-	logger.info(f"{_ts()} facebook.nav start list={lista}")
-	start = time.time()
-	try:
-		await page.goto(target)
-		# Espera condicional corta: primer contenido principal
-		try:
-			await page.wait_for_selector('div[role="main"]', timeout=1500)
-		except Exception:
-			await page.wait_for_timeout(500)
-		logger.info(f"{_ts()} facebook.nav ok list={lista} duration_ms={(time.time()-start)*1000:.0f}")
-		return True
-	except Exception as e:
-		logger.error(f"{_ts()} facebook.nav fail list={lista} error={e}")
-		return False
+    perfil_url = normalize_input_url('facebook', perfil_url)
+    base = perfil_url.rstrip('/')
+    target = f"{base}/{suffix}/"
+    logger.info(f"{_ts()} facebook.nav start list={lista} registry_ver={registry_version('facebook')}")
+    start = time.time()
+    try:
+        await page.goto(target, timeout=15_000)
+        try:
+            await page.wait_for_selector('div[role="main"]', timeout=2500)
+        except Exception:
+            pass
+        # Verificar selectores clave list_item
+        selectors_items = get_selectors('facebook', 'lists.list_item')
+        found_any = False
+        for sel in selectors_items:
+            try:
+                el = await page.query_selector(sel)
+                if el:
+                    found_any = True
+                    break
+            except Exception:
+                continue
+        if not found_any:
+            # Clasificar estado
+            try:
+                body_text = await page.inner_text('body')
+            except Exception:
+                body_text = ''
+            code = classify_page_state('facebook', body_text) or ErrorCode.SELECTOR_MISS
+            logger.warning(f"{_ts()} facebook.nav no_items list={lista} code={code.value}")
+        logger.info(f"{_ts()} facebook.nav ok list={lista} duration_ms={(time.time()-start)*1000:.0f}")
+        return True
+    except Exception as e:
+        logger.error(f"{_ts()} facebook.nav fail list={lista} error={e}")
+        return False
 
 
 # ---------- Extracción genérica de usuarios en listados ----------
 async def extraer_usuarios_listado(page, tipo_lista: str, usuario_principal: str) -> List[dict]:
-	"""Extracción de usuarios usando scroll_loop genérico (Fase1: refactor)."""
-	usuarios: Dict[str, dict] = {}
-	cfg = FACEBOOK_CONFIG.get('scroll', {})
-	max_scrolls_cfg = int(cfg.get('max_scrolls', 60))
-	max_scrolls = min(max_scrolls_cfg, 40)
+    """Extracción de usuarios usando scroll_loop genérico (Fase1: refactor + resource blocking)."""
+    usuarios: Dict[str, dict] = {}
+    cfg = FACEBOOK_CONFIG.get('scroll', {})
+    max_scrolls_cfg = int(cfg.get('max_scrolls', 60))
+    max_scrolls = min(max_scrolls_cfg, 40)
 
-	async def process_once() -> int:
-		before = len(usuarios)
-		await procesar_tarjetas_usuario(page, usuarios, usuario_principal)
-		return len(usuarios) - before
+    # Iniciar bloqueo de recursos (fonts, imágenes adicionales, videos) para la fase de lista
+    blocker = await start_list_blocking(page, 'facebook', phase=f'list.{tipo_lista}')
 
-	async def do_scroll():
-		try:
-			await page.evaluate("window.scrollBy(0, document.documentElement.clientHeight * 0.7)")
-		except Exception:
-			pass
+    async def process_once() -> int:
+        before = len(usuarios)
+        await procesar_tarjetas_usuario(page, usuarios, usuario_principal)
+        return len(usuarios) - before
 
-	async def bottom_check() -> bool:
-		try:
-			return await page.evaluate("() => (window.innerHeight + window.pageYOffset) >= (document.body.scrollHeight - 800)")
-		except Exception:
-			return False
+    async def do_scroll():
+        try:
+            await page.evaluate("window.scrollBy(0, document.documentElement.clientHeight * 0.7)")
+        except Exception:
+            pass
 
-	stats = await scroll_loop(
-		process_once=process_once,
-		do_scroll=do_scroll,
-		max_scrolls=max_scrolls,
-		pause_ms=900,
-		stagnation_limit=3,
-		empty_limit=2,
-		bottom_check=bottom_check,
-		adaptive=True,
-		adaptive_decay_threshold=0.35,
-		log_prefix=f"facebook.list type={tipo_lista}"
-	)
-	logger.info(f"{_ts()} facebook.list done type={tipo_lista} total={len(usuarios)} duration_ms={stats['duration_ms']} reason={stats['reason']}")
-	return list(usuarios.values())
+    async def bottom_check() -> bool:
+        try:
+            return await page.evaluate("() => (window.innerHeight + window.pageYOffset) >= (document.body.scrollHeight - 800)")
+        except Exception:
+            return False
+
+    stats = await scroll_loop(
+        process_once=process_once,
+        do_scroll=do_scroll,
+        max_scrolls=max_scrolls,
+        pause_ms=900,
+        stagnation_limit=3,
+        empty_limit=2,
+        bottom_check=bottom_check,
+        adaptive=True,
+        adaptive_decay_threshold=0.35,
+        log_prefix=f"facebook.list type={tipo_lista}",
+        timeout_ms=30000,
+    )
+    # Detener bloqueo y loggear stats
+    await blocker.stop()
+    if stats['reason'] == 'timeout':
+        logger.warning(f"{_ts()} facebook.list error.code=TIMEOUT type={tipo_lista} duration_ms={stats['duration_ms']}")
+    if len(usuarios) == 0:
+        logger.warning(f"{_ts()} facebook.list error.code=EMPTY_LIST type={tipo_lista} reason={stats['reason']}")
+    logger.info(f"{_ts()} facebook.list done type={tipo_lista} total={len(usuarios)} duration_ms={stats['duration_ms']} reason={stats['reason']}")
+    return list(usuarios.values())
 
 
 async def procesar_tarjetas_usuario(page, usuarios: Dict[str, dict], usuario_principal: str):
@@ -327,7 +358,10 @@ async def extraer_amigos_facebook(page, usuario_principal: str) -> List[dict]:
 		except Exception:
 			continue
 
-	return list(amigos_dict.values())
+	res = list(amigos_dict.values())
+	if len(res) == 0:
+		logger.warning(f"{_ts()} facebook.friends_all error.code=EMPTY_LIST")
+	return res
 
 
 # ---------- Reacciones en fotos ----------
@@ -526,21 +560,24 @@ async def scrap_reacciones_fotos(page, perfil_url: str, username: str, max_fotos
 
 	urls = await extraer_urls_fotos(page, max_fotos=max_fotos)
 	reacciones: Dict[str, dict] = {}
+	if not urls:
+		return []
 
-	for i, photo_url in enumerate(urls, 1):
+	async def process_photo(idx: int, photo_url: str):
 		try:
 			await page.goto(photo_url)
 			await page.wait_for_timeout(2500)
-			# Abrir reacciones de la foto
 			await abrir_y_scrapear_modal_reacciones(page, reacciones, photo_url)
-			# Opcional: reacciones en comentarios
 			if incluir_comentarios:
 				await abrir_y_scrapear_reacciones_en_comentarios(page, reacciones, photo_url)
-			# Pausas para rate limiting
-			if i % 3 == 0:
+			if idx % 3 == 0:
 				await asyncio.sleep(2)
 		except Exception:
-			continue
+			return False
+		return True
+
+	callables = [lambda i=i, u=u: process_photo(i+1, u) for i, u in enumerate(urls)]
+	await run_limited(callables, limit=1, label='fb.photo_reacts')
 	return list(reacciones.values())
 
 

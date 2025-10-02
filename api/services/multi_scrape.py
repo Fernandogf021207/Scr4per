@@ -10,6 +10,16 @@ from src.utils.url import extract_username_from_url, normalize_input_url
 from ..deps import storage_state_for
 from ..repositories import upsert_profile, add_relationship
 from ..db import get_conn
+from src.scrapers.facebook.adapter import FacebookScraperAdapter  # added
+from src.scrapers.instagram.adapter import InstagramScraperAdapter  # added
+from src.scrapers.x.adapter import XScraperAdapter  # added
+from src.scrapers.base import PlatformScraper  # added
+
+SCRAPER_REGISTRY = {
+    'facebook': FacebookScraperAdapter,
+    'instagram': InstagramScraperAdapter,
+    'x': XScraperAdapter,
+}
 
 # Reuse existing scraper functions (import here to avoid circulars)
 from src.scrapers.facebook.scraper import (
@@ -65,6 +75,11 @@ async def multi_scrape_execute(requests: List[Dict[str, Any]]) -> Dict[str, Any]
             username = req['username']
             max_photos = req['max_fotos']
 
+            scraper_cls = SCRAPER_REGISTRY.get(platform)
+            if not scraper_cls:
+                agg.warnings.append({"code":"PLATFORM_UNSUPPORTED","message":platform})
+                continue
+
             storage_state = storage_state_for(platform)
             if not storage_state:
                 agg.warnings.append({"code":"ROOT_SKIPPED", "message": f"Missing storage_state for {platform}"})
@@ -72,33 +87,32 @@ async def multi_scrape_execute(requests: List[Dict[str, Any]]) -> Dict[str, Any]
             browser = await pw.chromium.launch(headless=True)
             context = await browser.new_context(storage_state=storage_state)
             page = await context.new_page()
+            scraper: PlatformScraper = scraper_cls(page, platform)
             try:
-                root_profile, followers, following, friends, commenters, reactors = await _scrape_one(platform, username, page, max_photos)
-                # Add root profile
+                await scraper.prepare_page()
+                root_profile = await scraper.get_root_profile(username)
+                followers = await scraper.get_followers(username)
+                following = await scraper.get_following(username)
+                friends = await scraper.get_friends(username)
+                commenters = await scraper.get_commenters(username, max_photos)
+                reactors = await scraper.get_reactors(username, max_photos)
+
                 agg.add_root(make_profile(platform, root_profile['username'], root_profile.get('full_name'), root_profile.get('profile_url'), root_profile.get('photo_url'), (platform, username)))
-                # Normalize and add lists
                 _ingest_list(agg, platform, username, followers, direction='followers')
                 _ingest_list(agg, platform, username, following, direction='following')
                 _ingest_list(agg, platform, username, friends, direction='friends')
                 _ingest_activity_list(agg, platform, username, commenters, rel_type='comentó')
                 _ingest_activity_list(agg, platform, username, reactors, rel_type='reaccionó')
 
-                # Root-root relations (optional F1): simple detection (A follows B & B follows A handled naturally if both roots present)
-                # After adding all roots we could post-process, but leaving natural accumulation for now.
-
-                # Persist minimal (same approach as /scrape) - upsert root + direct relations participants
                 try:
                     with get_conn() as conn:
                         with conn.cursor() as cur:
-                            # Root
                             upsert_profile(cur, platform, username, root_profile.get('full_name'), root_profile.get('profile_url'), root_profile.get('photo_url'))
-                            # Others
                             for rel_item in (followers + following + friends + commenters + reactors):
                                 norm = _normalize_user_item(platform, rel_item)
                                 fu = norm.get('username')
                                 if fu and valid_username(fu):
                                     upsert_profile(cur, platform, fu, norm.get('full_name'), norm.get('profile_url'), norm.get('photo_url'))
-                                    # Relationship direction mapping for DB english types
                                     if norm.get('_rel_type_db'):
                                         add_relationship(cur, platform, norm.get('_rel_source_db'), norm.get('_rel_target_db'), norm.get('_rel_type_db'))
                             conn.commit()

@@ -1,0 +1,17 @@
+{
+  "facebook": {
+    "base_url": "https://www.facebook.com/",
+    "scroll": { "max_scrolls": 40, "pause_ms": 900 },
+    "timeouts": { "list_ms": 30000 }
+  },
+  "instagram": {
+    "base_url": "https://www.instagram.com/",
+    "scroll": { "max_scrolls": 40, "pause_ms": 900, "stagnation_limit": 6 },
+    "timeouts": { "list_ms": 35000 }
+  },
+  "x": {
+    "base_url": "https://x.com/",
+    "scroll": { "max_scrolls": 40, "pause_ms": 1000 },
+    "timeouts": { "list_ms": 32000 }
+  }
+}
