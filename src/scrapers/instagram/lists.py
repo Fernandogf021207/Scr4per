@@ -97,21 +97,68 @@ async def extraer_usuarios_instagram(page, tipo_lista="seguidores", usuario_prin
         except Exception:
             pass
 
+    # Estado para doble confirmación de bottom
+    bottom_state = {
+        'candidate': False,
+        'candidate_iter': 0,
+        'candidate_total': 0,
+        'candidate_sh': 0,
+    }
+    # Parámetros heurísticos (se pueden mover a config posteriormente)
+    EARLY_BOTTOM_MIN_SCROLLS = 7   # exigir al menos este número de scrolls antes de aceptar bottom si total aún bajo
+    EARLY_BOTTOM_MIN_TOTAL = 80    # si total < este umbral, pedir doble confirmación
+    BOTTOM_MARGIN_CONTAINER = 150
+    BOTTOM_MARGIN_WINDOW = 200
+
     async def bottom_check() -> bool:
         if iter_state['count'] < 3:
             return False
         try:
             if container:
                 is_bottom, metrics = await page.evaluate("""
-                    el => { const st = el.scrollTop; const ch = el.clientHeight; const sh = el.scrollHeight; return [ (st + ch) >= (sh - 150), {st, ch, sh} ]; }
-                """, container)
+                    el => { const st = el.scrollTop; const ch = el.clientHeight; const sh = el.scrollHeight; return [ (st + ch) >= (sh - %d), {st, ch, sh} ]; }
+                """ % BOTTOM_MARGIN_CONTAINER, container)
             else:
                 is_bottom, metrics = await page.evaluate("""
-                    () => { const st = window.pageYOffset || document.documentElement.scrollTop; const ch = window.innerHeight; const sh = document.documentElement.scrollHeight || document.body.scrollHeight; return [ (st + ch) >= (sh - 200), {st, ch, sh} ]; }
-                """)
-            if is_bottom:
-                logger.info(f"{_ts()} instagram.list bottom_candidate iter={iter_state['count']} metrics={metrics} total={len(usuarios_dict)}")
-            return is_bottom
+                    () => { const st = window.pageYOffset || document.documentElement.scrollTop; const ch = window.innerHeight; const sh = document.documentElement.scrollHeight || document.body.scrollHeight; return [ (st + ch) >= (sh - %d), {st, ch, sh} ]; }
+                """ % BOTTOM_MARGIN_WINDOW)
+            if not is_bottom:
+                # Reset estado si el scroll volvió a crecer
+                if bottom_state['candidate']:
+                    bottom_state['candidate'] = False
+                return False
+            # Tenemos un candidato a bottom
+            total_actual = len(usuarios_dict)
+            logger.info(f"{_ts()} instagram.list bottom_candidate iter={iter_state['count']} metrics={metrics} total={total_actual}")
+            # Condiciones para exigir doble confirmación
+            needs_double = (iter_state['count'] < EARLY_BOTTOM_MIN_SCROLLS) or (total_actual < EARLY_BOTTOM_MIN_TOTAL)
+            if not needs_double:
+                # Ya pasamos umbrales, aceptar bottom directamente
+                return True
+            # Primera vez que vemos bottom en condiciones tempranas
+            if not bottom_state['candidate']:
+                bottom_state.update({
+                    'candidate': True,
+                    'candidate_iter': iter_state['count'],
+                    'candidate_total': total_actual,
+                    'candidate_sh': metrics.get('sh', 0),
+                })
+                logger.info(f"{_ts()} instagram.list bottom_defer first_candidate iter={iter_state['count']} total={total_actual} sh={metrics.get('sh')} min_scrolls={EARLY_BOTTOM_MIN_SCROLLS} min_total={EARLY_BOTTOM_MIN_TOTAL}")
+                return False
+            # Segunda detección: verificar si nada cambió (altura y total estables)
+            stable_height = metrics.get('sh', 0) == bottom_state['candidate_sh']
+            stable_total = total_actual == bottom_state['candidate_total']
+            if stable_height and stable_total:
+                logger.info(f"{_ts()} instagram.list bottom_confirmed iter={iter_state['count']} total={total_actual} stable_height={stable_height} stable_total={stable_total}")
+                return True
+            # Hubo crecimiento: refrescar candidato y continuar
+            bottom_state.update({
+                'candidate_iter': iter_state['count'],
+                'candidate_total': total_actual,
+                'candidate_sh': metrics.get('sh', 0),
+            })
+            logger.info(f"{_ts()} instagram.list bottom_retry growth_detected iter={iter_state['count']} total={total_actual} sh={metrics.get('sh')}")
+            return False
         except Exception:
             return False
 
