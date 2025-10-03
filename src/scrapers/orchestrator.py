@@ -16,10 +16,12 @@ from typing import List, Dict, Any, Callable, Optional, Type
 import asyncio
 import logging
 import time
+import re
 
 from playwright.async_api import async_playwright
 
 from src.scrapers.base import PlatformScraper
+from src.utils.images import local_or_proxy_photo_url
 from api.services.aggregation import Aggregator, make_profile, normalize_username, valid_username
 from api.repositories import upsert_profile, add_relationship
 from api.db import get_conn
@@ -49,6 +51,8 @@ class ScrapeOrchestrator:
         persist: bool = True,
         headless: bool = True,
         max_concurrency: int = 1,
+        download_photos: bool = True,
+        photo_mode: str = 'download',  # 'download' | 'proxy' | 'external'
     ) -> None:
         self.scraper_registry = scraper_registry
         self.storage_state_resolver = storage_state_resolver
@@ -56,6 +60,8 @@ class ScrapeOrchestrator:
         self.persist = persist
         self.headless = headless
         self.max_concurrency = max_concurrency
+        self.download_photos = download_photos
+        self.photo_mode = photo_mode
 
     # ---------------------------- Public API ---------------------------------
     async def run(self, raw_requests: List[Dict[str, Any]]) -> Dict[str, Any]:
@@ -124,6 +130,14 @@ class ScrapeOrchestrator:
         try:
             await scraper.prepare_page()
             root_profile = await scraper.get_root_profile(username)
+            # Normalizar/descargar foto de perfil root si procede
+            if self.download_photos and root_profile.get('photo_url'):
+                try:
+                    root_profile['photo_url'] = await local_or_proxy_photo_url(
+                        root_profile['photo_url'], root_profile.get('username'), mode=self.photo_mode, page=page, on_failure='empty'
+                    )
+                except Exception:
+                    root_profile['photo_url'] = ''
             followers = await scraper.get_followers(username)
             following = await scraper.get_following(username)
             friends = await scraper.get_friends(username)
@@ -132,6 +146,14 @@ class ScrapeOrchestrator:
 
             # Ingest root
             agg.add_root(make_profile(platform, root_profile['username'], root_profile.get('full_name'), root_profile.get('profile_url'), root_profile.get('photo_url'), (platform, username)))
+            # Post-proceso de fotos en listas si se habilita
+            if self.download_photos:
+                followers = await self._ensure_photos_batch(followers, platform, page)
+                following = await self._ensure_photos_batch(following, platform, page)
+                friends = await self._ensure_photos_batch(friends, platform, page)
+                commenters = await self._ensure_photos_batch(commenters, platform, page)
+                reactors = await self._ensure_photos_batch(reactors, platform, page)
+
             self._ingest_list(agg, platform, username, followers, direction='followers')
             self._ingest_list(agg, platform, username, following, direction='following')
             self._ingest_list(agg, platform, username, friends, direction='friends')
@@ -215,3 +237,67 @@ class ScrapeOrchestrator:
                 conn.commit()
         except Exception:  # noqa: BLE001
             logger.exception("orchestrator.persist_error platform=%s root=%s", platform, root_username)
+
+    # --------------------------- Photos Helpers ------------------------------
+    async def _ensure_photos_batch(self, items: List[Dict[str, Any]], platform: str, page) -> List[Dict[str, Any]]:
+        if not items or platform not in ('instagram','facebook','x'):
+            return items
+        out: List[Dict[str, Any]] = []
+        # Parámetros de recuperación og:image
+        MAX_OG_FETCH = 40  # límite de perfiles sin foto a intentar
+        og_fetch_count = 0
+        for it in items:
+            try:
+                # Skip if already local or empty
+                photo = it.get('photo_url') or it.get('foto_usuario') or it.get('foto_perfil') or it.get('foto')
+                uname = it.get('username') or it.get('username_usuario')
+                purl = it.get('profile_url') or it.get('link_usuario') or it.get('url_usuario')
+                if not uname:
+                    out.append(it); continue
+                if not photo:
+                    # Intento recuperación og:image si hay URL de perfil y no excedimos límite
+                    if purl and og_fetch_count < MAX_OG_FETCH:
+                        recovered = await self._recover_photo_via_og(purl, uname, page)
+                        if recovered:
+                            photo = recovered
+                            # Guardar en estructura
+                            it['photo_url'] = photo
+                        og_fetch_count += 1
+                    else:
+                        out.append(it); continue
+                if str(photo).startswith('/storage/'):
+                    out.append(it); continue
+                # Attempt download / proxy
+                try:
+                    local = await local_or_proxy_photo_url(photo, uname, mode=self.photo_mode, page=page, on_failure='empty')
+                    # Write back into canonical key photo_url
+                    if local:
+                        if 'photo_url' in it:
+                            it['photo_url'] = local
+                        elif 'foto_usuario' in it:
+                            it['foto_usuario'] = local
+                        else:
+                            it['photo_url'] = local
+                except Exception:
+                    pass
+                out.append(it)
+            except Exception:
+                out.append(it)
+        return out
+
+    async def _recover_photo_via_og(self, profile_url: str, username: str, page) -> str:
+        """Recupera la URL de imagen de perfil consultando el HTML y extrayendo meta og:image.
+        Devuelve la URL directa (CDN) sin descargar; el flujo de descarga la procesará después.
+        """
+        try:
+            resp = await page.request.get(profile_url, timeout=10000)
+            if not resp.ok:
+                return ''
+            html = await resp.text()
+            # Buscar meta property="og:image"
+            m = re.search(r'<meta[^>]+property=["\']og:image["\'][^>]+content=["\']([^"\']+)["\']', html, re.IGNORECASE)
+            if m:
+                return m.group(1)
+        except Exception:
+            return ''
+        return ''

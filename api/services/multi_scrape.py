@@ -37,6 +37,8 @@ async def multi_scrape_execute(requests: List[Dict[str, Any]]) -> Dict[str, Any]
         persist=True,
         headless=True,
         max_concurrency=DEFAULT_MAX_CONCURRENCY if len(requests) > 1 else 1,
+        download_photos=True,
+        photo_mode='download',  # podría hacerse configurable luego
     )
     try:
         return await orchestrator.run(requests)

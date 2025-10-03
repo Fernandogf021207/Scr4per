@@ -96,7 +96,7 @@ async def procesar_tarjetas_usuario(page, usuarios: Dict[str, dict], usuario_pri
 async def extraer_usuarios_listado(page, tipo_lista: str, usuario_principal: str) -> List[dict]:
     usuarios: Dict[str, dict] = {}
     cfg = FACEBOOK_CONFIG.get('scroll', {})
-    max_scrolls_cfg = int(cfg.get('max_scrolls', 60))
+    max_scrolls_cfg = int(cfg.get('max_scrolls', 100))
     max_scrolls = min(max_scrolls_cfg, 40)
     blocker = await start_list_blocking(page, 'facebook', phase=f'list.{tipo_lista}')
     async def process_once() -> int:
@@ -135,23 +135,12 @@ async def extraer_usuarios_listado(page, tipo_lista: str, usuario_principal: str
     return list(usuarios.values())
 
 async def extraer_amigos_facebook(page, usuario_principal: str) -> List[dict]:
-    try:
-        for _ in range(50):
-            try:
-                await page.mouse.wheel(0, 3000)
-            except Exception:
-                try:
-                    await page.evaluate("window.scrollBy(0, 3000)")
-                except Exception:
-                    pass
-            await asyncio.sleep(2)
-    except Exception:
-        pass
+    """Extrae amigos reutilizando scroll_loop para evitar esperas fijas largas.
+    Early-exit por: empty, stagnation, bottom, timeout.
+    Timeout fijo por ahora: 30s (alineado a otras listas).
+    """
+    logger.info(f"{_ts()} facebook.list start type=friends_all")
     amigos_dict: Dict[str, dict] = {}
-    try:
-        tarjetas = await page.query_selector_all('div[role="main"] div:has(a[tabindex="0"])')
-    except Exception:
-        tarjetas = []
     invalid_segments = [
         "/followers", "/following", "/friends", "/videos", "/photo", "/photos",
         "/tv", "/events", "/past_events", "/likes", "/likes_all",
@@ -160,34 +149,122 @@ async def extraer_amigos_facebook(page, usuario_principal: str) -> List[dict]:
         "/games", "/reviews_given", "/reviews_written", "/video_movies_watch",
         "/profile_songs", "/places_recent", "/posts/"
     ]
-    for tarjeta in tarjetas:
+
+    blocker = await start_list_blocking(page, 'facebook', phase='list.friends_all')
+    iter_state = {'count': 0, 'last_sh': 0}
+
+    # Heurísticas anti early-exit similares a Instagram
+    MIN_SCROLLS_FOR_DIRECT_BOTTOM = 10       # exigir al menos 10 scrolls antes de aceptar bottom directo
+    MIN_TOTAL_FOR_DIRECT_BOTTOM = 180        # si total < 180 requerir doble confirmación
+    BOTTOM_MARGIN = 700                      # margen px para considerar near-bottom
+    MAX_SCROLLS_FRIENDS = 80                 # permitir más iteraciones para listas grandes (~1000)
+    TIMEOUT_MS_FRIENDS = 60000               # más tiempo para cargar grandes volúmenes
+    DOUBLE_CONFIRM_STABLE_SH = True          # requerir scrollHeight estable
+    bottom_state = {
+        'candidate': False,
+        'candidate_iter': 0,
+        'candidate_total': 0,
+        'candidate_sh': 0,
+    }
+
+    async def process_once() -> int:
+        before = len(amigos_dict)
         try:
-            a_nombre = await tarjeta.query_selector('a[tabindex="0"]')
-            a_img = await tarjeta.query_selector('a[tabindex="-1"] img')
-            nombre = (await get_text(a_nombre)) or "Sin nombre"
-            perfil = await get_attr(a_nombre, "href") if a_nombre else None
-            imagen = await get_attr(a_img, "src") if a_img else None
-            if not perfil:
-                continue
-            perfil_limpio = normalize_profile_url(perfil)
-            low = (nombre or "").lower().strip()
-            if low.startswith(("1 amigo", "2 amigos", "3 amigos")):
-                continue
-            if any(seg in perfil_limpio for seg in invalid_segments):
-                continue
-            slug = perfil_limpio.split('facebook.com/')[-1].strip('/')
-            if slug == usuario_principal:
-                continue
-            if perfil_limpio in amigos_dict:
-                continue
-            username = slug.split('?')[0]
-            amigos_dict[perfil_limpio] = build_user_item('facebook', perfil_limpio, nombre, imagen or '')
+            tarjetas = await page.query_selector_all('div[role="main"] div:has(a[tabindex="0"])')
         except Exception:
-            continue
-    res = list(amigos_dict.values())
-    if len(res) == 0:
-        logger.warning(f"{_ts()} facebook.friends_all error.code=EMPTY_LIST")
-    return res
+            tarjetas = []
+        for tarjeta in tarjetas:
+            try:
+                a_nombre = await tarjeta.query_selector('a[tabindex="0"]')
+                a_img = await tarjeta.query_selector('a[tabindex="-1"] img')
+                nombre = (await get_text(a_nombre)) or ""
+                perfil = await get_attr(a_nombre, "href") if a_nombre else None
+                imagen = await get_attr(a_img, "src") if a_img else None
+                if not perfil:
+                    continue
+                perfil_limpio = normalize_profile_url(perfil)
+                if not perfil_limpio:
+                    continue
+                low = (nombre or "").lower().strip()
+                if low.startswith(("1 amigo", "2 amigos", "3 amigos")):
+                    continue
+                if any(seg in perfil_limpio for seg in invalid_segments):
+                    continue
+                slug = perfil_limpio.split('facebook.com/')[-1].strip('/')
+                if slug == usuario_principal:
+                    continue
+                if perfil_limpio in amigos_dict:
+                    continue
+                username = slug.split('?')[0]
+                amigos_dict[perfil_limpio] = build_user_item('facebook', perfil_limpio, nombre or username, imagen or '')
+            except Exception:
+                continue
+        iter_state['count'] += 1
+        return len(amigos_dict) - before
+
+    async def do_scroll():
+        try:
+            await page.evaluate("window.scrollBy(0, document.documentElement.clientHeight * 0.8)")
+        except Exception:
+            try:
+                await page.mouse.wheel(0, 2500)
+            except Exception:
+                pass
+
+    async def bottom_check() -> bool:
+        # Evitar bottom muy temprano
+        if iter_state['count'] < 3:
+            return False
+        try:
+            is_bottom, metrics = await page.evaluate(f"() => [ (window.innerHeight + window.pageYOffset) >= (document.body.scrollHeight - {BOTTOM_MARGIN}), {{sh: document.body.scrollHeight, y: window.pageYOffset, ih: window.innerHeight}} ]")
+        except Exception:
+            return False
+        if not is_bottom:
+            if bottom_state['candidate']:
+                bottom_state['candidate'] = False
+            return False
+        total_actual = len(amigos_dict)
+        sh = metrics.get('sh', 0)
+        logger.info(f"{_ts()} facebook.list bottom_candidate type=friends_all iter={iter_state['count']} total={total_actual} sh={sh} metrics={metrics}")
+        needs_double = (iter_state['count'] < MIN_SCROLLS_FOR_DIRECT_BOTTOM) or (total_actual < MIN_TOTAL_FOR_DIRECT_BOTTOM)
+        if not needs_double:
+            return True
+        if not bottom_state['candidate']:
+            bottom_state.update({'candidate': True, 'candidate_iter': iter_state['count'], 'candidate_total': total_actual, 'candidate_sh': sh})
+            logger.info(f"{_ts()} facebook.list bottom_defer first_candidate iter={iter_state['count']} total={total_actual} sh={sh} min_scrolls={MIN_SCROLLS_FOR_DIRECT_BOTTOM} min_total={MIN_TOTAL_FOR_DIRECT_BOTTOM}")
+            return False
+        # Segunda detección: verificar estabilidad
+        stable_total = total_actual == bottom_state['candidate_total']
+        stable_sh = sh == bottom_state['candidate_sh'] if DOUBLE_CONFIRM_STABLE_SH else True
+        if stable_total and stable_sh:
+            logger.info(f"{_ts()} facebook.list bottom_confirmed iter={iter_state['count']} total={total_actual} stable_total={stable_total} stable_sh={stable_sh}")
+            return True
+        # Hubo crecimiento -> rearmar candidato
+        bottom_state.update({'candidate_iter': iter_state['count'], 'candidate_total': total_actual, 'candidate_sh': sh})
+        logger.info(f"{_ts()} facebook.list bottom_retry growth_detected iter={iter_state['count']} total={total_actual} sh={sh}")
+        return False
+
+    stats = await scroll_loop(
+        process_once=process_once,
+        do_scroll=do_scroll,
+        max_scrolls=MAX_SCROLLS_FRIENDS,
+        pause_ms=900,
+        stagnation_limit=4,
+        empty_limit=2,
+        bottom_check=bottom_check,
+        adaptive=False,  # no reducir max scrolls para listas grandes
+        adaptive_decay_threshold=0.35,
+        log_prefix="facebook.list type=friends_all",
+        timeout_ms=TIMEOUT_MS_FRIENDS,
+    )
+    await blocker.stop()
+
+    if stats['reason'] == 'timeout':
+        logger.warning(f"{_ts()} facebook.list error.code=TIMEOUT type=friends_all duration_ms={stats['duration_ms']}")
+    if len(amigos_dict) == 0:
+        logger.warning(f"{_ts()} facebook.friends_all error.code=EMPTY_LIST reason={stats['reason']}")
+    logger.info(f"{_ts()} facebook.list done type=friends_all total={len(amigos_dict)} duration_ms={stats['duration_ms']} reason={stats['reason']} scrolls={stats.get('iterations')}" )
+    return list(amigos_dict.values())
 
 async def scrap_friends_all(page, perfil_url: str, username: str) -> List[dict]:
     if not await navegar_a_lista(page, perfil_url, 'friends_all'):
