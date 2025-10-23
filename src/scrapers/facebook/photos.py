@@ -1,6 +1,7 @@
 import time
 import logging
 import asyncio
+import random
 from typing import List, Dict
 from src.utils.dom import find_scroll_container, scroll_collect
 from src.scrapers.facebook.utils import get_text, get_attr, absolute_url_keep_query, normalize_profile_url
@@ -12,17 +13,69 @@ logger = logging.getLogger(__name__)
 def _ts() -> str:
     return time.strftime('%Y-%m-%dT%H:%M:%S', time.gmtime())
 
+# Tiempos y parámetros de scroll en reacciones (tunable)
+REACTIONS_SCROLL_WAIT_MIN = 300      # ms, espera mínima tras scroll
+REACTIONS_SCROLL_WAIT_MAX = 900      # ms, espera máxima tras scroll
+REACTIONS_STABILITY_RETRIES = 4      # reintentos de poll para que cargue contenido dinámico
+REACTIONS_REEVAL_EVERY = 10          # re-evaluar contenedor cada N scrolls
+REACTIONS_BOTTOM_STABLE_TICKS = 3    # ticks seguidos detectando fondo sin cambios antes de cortar
+REACTIONS_SCROLL_HEIGHT_EPS = 24     # px de tolerancia para considerar cambio de scrollHeight
+
+async def _find_comments_container(page):
+    """Encuentra el contenedor más probable de comentarios aunque no exista un modal.
+
+    Heurística: buscar el elemento con overflowY auto/scroll y mayor (scrollHeight-clientHeight)
+    que además contenga artículos/comentarios o texto relacionado. Si no hay, devolver None.
+    """
+    try:
+        handle = await page.evaluate_handle(
+            """
+            () => {
+                const nodes = Array.from(document.querySelectorAll('div, section, main, article, aside'));
+                let best = null; let bestScore = 0;
+                for (const n of nodes) {
+                    const sh = n.scrollHeight || 0;
+                    const ch = n.clientHeight || 0;
+                    if (sh < ch + 120) continue;
+                    const style = getComputedStyle(n);
+                    const oy = style.overflowY;
+                    if (!(oy === 'auto' || oy === 'scroll')) continue;
+                    // señales de comentarios
+                    const txt = (n.getAttribute('aria-label') || n.innerText || '').toLowerCase();
+                    let score = (sh - ch);
+                    if (txt.includes('comentario') || txt.includes('comments')) score += 5000;
+                    // si contiene artículos (comentarios) dentro
+                    const hasArticles = n.querySelectorAll('[role="article"]').length;
+                    if (hasArticles) score += 3000 + hasArticles * 10;
+                    if (score > bestScore) { best = n; bestScore = score; }
+                }
+                return best;
+            }
+            """
+        )
+        return handle
+    except Exception:
+        return None
+
 async def navegar_a_fotos(page, perfil_url: str) -> bool:
+    """Navega a la pestaña de fotos intentando rutas conocidas y minimizando carga pesada.
+
+    Estrategias anti-crash:
+    - Usar wait_until='domcontentloaded' para no esperar recursos pesados.
+    - Ejecutar window.stop() para frenar cargas adicionales (imágenes/videos).
+    """
     candidates = ["photos_by", "photos", "photos_all"]
     perfil_url = normalize_input_url('facebook', perfil_url)
     base = perfil_url.rstrip('/')
     for suf in candidates:
         try:
-            await page.goto(f"{base}/{suf}/")
-            await page.wait_for_timeout(2500)
-            has_photos = await page.query_selector('a[href*="photo.php"], a[href*="/photos/"] img, img[src*="scontent"]')
-            if has_photos:
+            await page.goto(f"{base}/{suf}/", wait_until="domcontentloaded")
+            # Espera dirigida por selector de fotos; no detener cargas aquí para no impedir render
+            try:
+                await page.wait_for_selector('a[href*="photo.php"], a[href*="/photos/"]', timeout=4000)
                 return True
+            except Exception:
+                pass
         except Exception:
             continue
     return False
@@ -67,6 +120,23 @@ async def extraer_urls_fotos(page, max_fotos: int = 5) -> List[str]:
 async def procesar_usuarios_en_modal_reacciones(page, reacciones_dict: Dict[str, dict], photo_url: str):
     try:
         container = await find_scroll_container(page)
+        # Colocar el mouse en posición central del contenedor (simulación humana)
+        try:
+            # Si no hay contenedor aún, intenta apuntar al centro del modal; si tampoco, al centro de la ventana
+            dialog = await page.query_selector('div[role="dialog"]')
+            bb = None
+            if container:
+                bb = await container.bounding_box()
+            if (not bb) and dialog:
+                bb = await dialog.bounding_box()
+            if bb:
+                await page.mouse.move(bb['x'] + bb['width']/2, bb['y'] + bb['height']/2, steps=10)
+            else:
+                vw, vh = await page.evaluate('[window.innerWidth, window.innerHeight]')
+                await page.mouse.move(vw/2, vh/2, steps=8)
+        except Exception:
+            pass
+
         async def process_cb(page_, _container) -> int:
             before = len(reacciones_dict)
             selectores = [
@@ -110,42 +180,192 @@ async def procesar_usuarios_en_modal_reacciones(page, reacciones_dict: Dict[str,
                 except Exception:
                     continue
             return len(reacciones_dict) - before
-        await scroll_collect(
-            page,
-            process_cb,
-            container=container,
-            max_scrolls=50,
-            pause_ms=900,
-            no_new_threshold=6,
-        )
+        # Bucle de scroll dinámico dentro del modal (más profundo)
+        scrolls = 0
+        no_new = 0
+        max_scrolls = 120
+        no_new_threshold = 10
+        bottom_stable_ticks = 0
+        last_scroll_height = 0
+        while scrolls < max_scrolls and no_new < no_new_threshold:
+            try:
+                added = await process_cb(page, container)
+            except Exception:
+                added = 0
+            if added > 0:
+                no_new = 0
+                bottom_stable_ticks = 0
+            else:
+                no_new += 1
+
+            # Re-evaluar contenedor periódicamente por si cambia la estructura interna
+            if (scrolls % REACTIONS_REEVAL_EVERY == 0) or (container is None):
+                try:
+                    c2 = await find_scroll_container(page)
+                    if c2:
+                        container = c2
+                except Exception:
+                    pass
+
+            # Verificar si estamos al fondo del contenedor (pero no cortar demasiado pronto)
+            at_bottom = False
+            try:
+                at_bottom = await container.evaluate('el => (el.scrollTop + el.clientHeight) >= (el.scrollHeight - 120)') if container else False
+            except Exception:
+                at_bottom = False
+            # Trackear scrollHeight para decidir estabilidad en fondo
+            try:
+                sh = await container.evaluate('el => el.scrollHeight') if container else 0
+            except Exception:
+                sh = 0
+            if at_bottom:
+                if sh and (sh <= last_scroll_height + REACTIONS_SCROLL_HEIGHT_EPS):
+                    bottom_stable_ticks += 1
+                else:
+                    bottom_stable_ticks = 0
+            else:
+                bottom_stable_ticks = 0
+            last_scroll_height = max(last_scroll_height, sh or 0)
+            if at_bottom and no_new >= 3 and bottom_stable_ticks >= REACTIONS_BOTTOM_STABLE_TICKS:
+                break
+
+            # Scroll dinámico con variación
+            delta = 720 + int(random.uniform(-160, 320))
+            try:
+                if container:
+                    # Intento de focus antes de scroll
+                    try:
+                        await container.evaluate('el => el.focus()')
+                    except Exception:
+                        pass
+                    await container.evaluate('(el, dy) => el.scrollBy({top: dy, left: 0, behavior: "auto"})', delta)
+                else:
+                    await page.evaluate('(dy) => window.scrollBy(0, dy)', delta)
+            except Exception:
+                pass
+
+            # Espera adaptativa para que cargue contenido dinámico antes de declarar "no hay más"
+            try:
+                # Pequeña ventana de polls cortos para detectar aparición de nuevos elementos o cambio de altura
+                polls = REACTIONS_STABILITY_RETRIES
+                prev_count = len(reacciones_dict)
+                prev_sh = last_scroll_height
+                for _ in range(polls):
+                    await page.wait_for_timeout(int(random.uniform(REACTIONS_SCROLL_WAIT_MIN, REACTIONS_SCROLL_WAIT_MAX)))
+                    try:
+                        added_poll = await process_cb(page, container)
+                    except Exception:
+                        added_poll = 0
+                    if added_poll > 0:
+                        no_new = 0
+                        bottom_stable_ticks = 0
+                        # actualizar altura si cambió
+                        try:
+                            prev_sh = await (container.evaluate('el => el.scrollHeight') if container else page.evaluate('() => document.body.scrollHeight'))
+                        except Exception:
+                            prev_sh = prev_sh
+                        break
+                    # si la altura de scroll crece, damos oportunidad a más carga
+                    try:
+                        cur_sh = await (container.evaluate('el => el.scrollHeight') if container else page.evaluate('() => document.body.scrollHeight'))
+                    except Exception:
+                        cur_sh = prev_sh
+                    if cur_sh > (prev_sh + REACTIONS_SCROLL_HEIGHT_EPS):
+                        prev_sh = cur_sh
+                        bottom_stable_ticks = 0
+                        continue
+                # si nada nuevo y altura igual, caerá al siguiente ciclo incrementando no_new
+            except Exception:
+                pass
+            scrolls += 1
     except Exception:
         return
 
 async def abrir_y_scrapear_modal_reacciones(page, reacciones_dict: Dict[str, dict], photo_url: str):
-    botones = [
-        'div[role="button"]:has-text("Ver quién reaccionó")',
-        'div[role="button"]:has-text("See who reacted")',
-        'a[role="button"]:has-text("reaccion")',
-        'div[role="button"][aria-label*="reaccion"]',
-        'div[role="button"][aria-label*="react"]',
-    ]
-    for sel in botones:
+    """Abre modal de reacciones buscando selectores específicos incluyendo 'Todas las reacciones:'"""
+    # Política: por foto intentamos abrir SOLO UNA VEZ para evitar reabrir si el usuario lo cerró manualmente.
+    attempted_click = False  # True en cuanto disparemos un click de apertura
+    # Si el diálogo ya está abierto al entrar, procesar y salir
+    try:
+        existing = await page.query_selector('div[role="dialog"]')
+        if existing:
+            await procesar_usuarios_en_modal_reacciones(page, reacciones_dict, photo_url)
+            try:
+                close_btn = await page.query_selector('div[role="dialog"] [aria-label*="Cerrar"], div[role="dialog"] [aria-label*="Close"]')
+                if close_btn:
+                    await close_btn.click()
+                    await page.wait_for_timeout(300)
+            except Exception:
+                pass
+            return True
+    except Exception:
+        pass
+    # Selector único (basado en HTML provisto): botón con div interno "Todas las reacciones:"
+    sel = 'div[role="button"]:has(div.x9f619.x1ja2u2z.xzpqnlu.x1hyvwdk.x14bfe9o.xjm9jq1.x6ikm8r.x10wlt62.x10l6tqk.x1i1rx1s:has-text("Todas las reacciones:"))'
+    try:
+        elementos = await page.query_selector_all(sel)
+        visibles = []
+        for e in elementos:
+            try:
+                if await e.is_visible():
+                    visibles.append(e)
+            except Exception:
+                continue
+        if not visibles:
+            logger.warning(f"{_ts()} fb.reactions no_button_found url={photo_url}")
+            return False
+        if attempted_click:
+            return False
+        elem = visibles[0]
         try:
-            btn = await page.query_selector(sel)
-            if btn:
-                await btn.click()
-                await page.wait_for_timeout(1500)
-                await procesar_usuarios_en_modal_reacciones(page, reacciones_dict, photo_url)
+            await elem.scroll_into_view_if_needed()
+        except Exception:
+            pass
+        attempted_click = True
+        opened = False
+        for _ in range(2):
+            try:
+                await elem.click()
+            except Exception:
                 try:
-                    close_btn = await page.query_selector('div[role="dialog"] [aria-label*="Cerrar"], div[role="dialog"] [aria-label*="Close"]')
-                    if close_btn:
-                        await close_btn.click()
-                        await page.wait_for_timeout(500)
+                    elem = await elem.evaluate_handle('el => el.closest("[role=button]") || el')
+                    await elem.click()
                 except Exception:
                     pass
-                return True
+            try:
+                await page.wait_for_selector('div[role="dialog"]', timeout=2000)
+                opened = True
+                break
+            except Exception:
+                await page.wait_for_timeout(300)
+        if not opened:
+            return False
+        # Esperar contenido dentro del modal para evitar spinner
+        try:
+            await page.wait_for_selector('div[role="dialog"] a[role="link"]', timeout=4000)
         except Exception:
-            continue
+            try:
+                close_btn = await page.query_selector('div[role="dialog"] [aria-label*="Cerrar"], div[role="dialog"] [aria-label*="Close"]')
+                if close_btn:
+                    await close_btn.click()
+                    await page.wait_for_timeout(300)
+            except Exception:
+                pass
+            return False
+        await procesar_usuarios_en_modal_reacciones(page, reacciones_dict, photo_url)
+        try:
+            close_btn = await page.query_selector('div[role="dialog"] [aria-label*="Cerrar"], div[role="dialog"] [aria-label*="Close"]')
+            if close_btn:
+                await close_btn.click()
+                await page.wait_for_timeout(400)
+        except Exception:
+            pass
+        logger.info(f"{_ts()} fb.reactions modal_done count={len(reacciones_dict)}")
+        return True
+    except Exception:
+        pass
+
+    logger.warning(f"{_ts()} fb.reactions no_modal_opened url={photo_url}")
     return False
 
 async def abrir_y_scrapear_reacciones_en_comentarios(page, reacciones_dict: Dict[str, dict], photo_url: str):
@@ -190,15 +410,26 @@ async def scrap_reacciones_fotos(page, perfil_url: str, username: str, max_fotos
     reacciones: Dict[str, dict] = {}
     for i, photo_url in enumerate(urls, 1):
         try:
-            await page.goto(photo_url)
-            await page.wait_for_timeout(2500)
-            await abrir_y_scrapear_modal_reacciones(page, reacciones, photo_url)
+            # Usar una página fresca por foto para aislar fallos del renderer
+            new_page = await page.context.new_page()
+            await new_page.goto(photo_url, wait_until="domcontentloaded")
+            await new_page.wait_for_timeout(600)
+            opened = await abrir_y_scrapear_modal_reacciones(new_page, reacciones, photo_url)
+            if not opened:
+                # Handle: si no hay likes en el post principal, intentar reacciones de comentarios (si existen)
+                await abrir_y_scrapear_reacciones_en_comentarios(new_page, reacciones, photo_url)
             if incluir_comentarios:
-                await abrir_y_scrapear_reacciones_en_comentarios(page, reacciones, photo_url)
+                await abrir_y_scrapear_reacciones_en_comentarios(new_page, reacciones, photo_url)
             if i % 3 == 0:
                 await asyncio.sleep(2)
         except Exception:
-            continue
+            # Ignorar fallo de esta foto y continuar con la siguiente
+            pass
+        finally:
+            try:
+                await new_page.close()
+            except Exception:
+                pass
     return list(reacciones.values())
 
 async def procesar_comentarios_en_modal_foto(page, comentarios_dict: Dict[str, dict], photo_url: str):
@@ -284,9 +515,28 @@ async def scrap_comentarios_fotos(page, perfil_url: str, username: str, max_foto
     comentarios: Dict[str, dict] = {}
     for i, photo_url in enumerate(urls, 1):
         try:
-            await page.goto(photo_url)
-            await page.wait_for_timeout(2000)
-            for _ in range(15):
+            new_page = await page.context.new_page()
+            await new_page.goto(photo_url, wait_until="domcontentloaded")
+            await new_page.wait_for_timeout(600)
+
+            # Asegurar modal si existe, sino trabajaremos con layout de página
+            try:
+                await new_page.wait_for_selector('div[role="dialog"]', timeout=1500)
+            except Exception:
+                pass
+
+            # Encontrar contenedor scrollable: prioriza modal; si no, buscar mejor contenedor de comentarios en página
+            container = await find_scroll_container(new_page)
+            if not container:
+                container = await _find_comments_container(new_page)
+
+            # Bucle de carga y scroll de comentarios
+            scrolls = 0
+            no_new = 0
+            max_scrolls = 60
+            no_new_threshold = 10
+            while scrolls < max_scrolls and no_new < no_new_threshold:
+                # Intentar expandir comentarios/respuestas
                 try:
                     botones = [
                         'div[role="button"]:has-text("Ver más comentarios")',
@@ -301,45 +551,67 @@ async def scrap_comentarios_fotos(page, perfil_url: str, username: str, max_foto
                         'div[role="button"]:has-text("Ver respuestas")',
                         'div[role="button"]:has-text("Mostrar respuestas")',
                     ]
+                    clicked_any = False
                     for bsel in botones:
-                        b = await page.query_selector(bsel)
+                        b = await new_page.query_selector(bsel)
                         if b:
                             try:
                                 role_btn = await b.evaluate_handle('el => el.closest("[role=\\"button\\"]") || el')
                                 await role_btn.click()
                             except Exception:
                                 await b.click()
-                            await page.wait_for_timeout(900)
+                            clicked_any = True
+                            await new_page.wait_for_timeout(500)
                             break
+                    if clicked_any:
+                        await new_page.wait_for_timeout(400)
                 except Exception:
                     pass
+
+                before = len(comentarios)
+                await procesar_comentarios_en_modal_foto(new_page, comentarios, photo_url)
+                added = len(comentarios) - before
+                if added > 0:
+                    no_new = 0
+                else:
+                    no_new += 1
+
+                # Re-evaluar contenedor de scroll periódicamente
+                if (scrolls % 8 == 0) or (container is None):
+                    try:
+                        c2 = await find_scroll_container(new_page)
+                        if c2:
+                            container = c2
+                    except Exception:
+                        pass
+
+                # Scroll dentro del contenedor
                 try:
-                    await page.evaluate("""
-                        () => {
-                            const modal = document.querySelector('div[role="dialog"]');
-                            let el = modal;
-                            if (modal) {
-                                let best = modal;
-                                const nodes = modal.querySelectorAll('div, section, main, article');
-                                nodes.forEach(n => {
-                                    const sh = n.scrollHeight || 0;
-                                    const ch = n.clientHeight || 0;
-                                    const st = getComputedStyle(n).overflowY;
-                                    if (sh > ch + 50 && (st === 'auto' || st === 'scroll')) {
-                                        best = n;
-                                    }
-                                });
-                                el = best;
-                            }
-                            (el || document.scrollingElement || document.body).scrollTop += 800;
-                        }
-                    """)
+                    delta = 720 + int(random.uniform(-160, 320))
+                    if container:
+                        try:
+                            await container.evaluate('el => el.focus()')
+                        except Exception:
+                            pass
+                        await container.evaluate('(el, dy) => el.scrollBy({top: dy, left: 0, behavior: "auto"})', delta)
+                    else:
+                        await new_page.evaluate('(dy) => window.scrollBy(0, dy)', delta)
                 except Exception:
                     pass
-                await page.wait_for_timeout(800)
-                await procesar_comentarios_en_modal_foto(page, comentarios, photo_url)
+
+                try:
+                    await new_page.wait_for_timeout(650 + int(random.uniform(-250, 350)))
+                except Exception:
+                    pass
+                scrolls += 1
+
             if i % 3 == 0:
                 await asyncio.sleep(2)
         except Exception:
-            continue
+            pass
+        finally:
+            try:
+                await new_page.close()
+            except Exception:
+                pass
     return list(comentarios.values())

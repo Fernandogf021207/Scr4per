@@ -69,7 +69,38 @@ class ScrapeOrchestrator:
         agg = Aggregator()
         timings: Dict[str, Dict[str, Any]] = {}
         async with async_playwright() as pw:
-            browser = await pw.chromium.launch(headless=self.headless)
+            # Launch with aggressive anti-crash flags and stealth to avoid Facebook detection
+            browser = await pw.chromium.launch(
+                headless=self.headless,
+                args=[
+                    "--disable-blink-features=AutomationControlled",  # Hide automation
+                    "--disable-dev-shm-usage",  # Prevent shared memory issues
+                    "--no-sandbox",  # Required for some environments
+                    "--disable-setuid-sandbox",
+                    "--disable-gpu",  # Prevent GPU crashes
+                    "--disable-software-rasterizer",
+                    "--disable-extensions",
+                    "--disable-background-networking",
+                    "--disable-background-timer-throttling",
+                    "--disable-backgrounding-occluded-windows",
+                    "--disable-breakpad",
+                    "--disable-component-extensions-with-background-pages",
+                    "--disable-features=TranslateUI,BlinkGenPropertyTrees",
+                    "--disable-ipc-flooding-protection",
+                    "--disable-renderer-backgrounding",
+                    "--enable-features=NetworkService,NetworkServiceInProcess",
+                    "--force-color-profile=srgb",
+                    "--metrics-recording-only",
+                    "--no-first-run",
+                    "--safebrowsing-disable-auto-update",
+                    "--password-store=basic",
+                    "--use-mock-keychain",
+                    "--disable-accelerated-2d-canvas",
+                    "--disable-accelerated-jpeg-decoding",
+                    "--disable-accelerated-mjpeg-decode",
+                    "--disable-accelerated-video-decode",
+                ]
+            )
             sem = asyncio.Semaphore(self.max_concurrency)
 
             async def runner(req: ScrapeRequest):
@@ -123,8 +154,24 @@ class ScrapeOrchestrator:
         if not storage_state:
             agg.warnings.append({"code": "ROOT_SKIPPED", "message": f"Missing storage_state for {platform}"})
             return
-        context = await browser.new_context(storage_state=storage_state)
-        page = await context.new_page()
+        
+        # Helper to create fresh context+page
+        async def create_context_and_page():
+            context = await browser.new_context(
+                storage_state=storage_state,
+                viewport={'width': 1280, 'height': 720},
+                user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+                locale='en-US',
+            )
+            # Stealth: hide webdriver flag
+            await context.add_init_script("""
+                Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
+                window.chrome = {runtime: {}};
+            """)
+            page = await context.new_page()
+            return context, page
+        
+        context, page = await create_context_and_page()
         scraper: PlatformScraper = scraper_cls(page, platform)
         username = req.username
         try:
@@ -138,11 +185,25 @@ class ScrapeOrchestrator:
                     )
                 except Exception:
                     root_profile['photo_url'] = ''
-            followers = await scraper.get_followers(username)
-            following = await scraper.get_following(username)
-            friends = await scraper.get_friends(username)
-            commenters = await scraper.get_commenters(username, req.max_photos)
-            reactors = await scraper.get_reactors(username, req.max_photos)
+            
+            # Facebook-specific: recreate context for each list to avoid crashes
+            if platform == 'facebook':
+                followers = await self._fb_list_with_fresh_context(browser, storage_state, scraper_cls, username, 'followers')
+                following = await self._fb_list_with_fresh_context(browser, storage_state, scraper_cls, username, 'following')
+                friends = await self._fb_list_with_fresh_context(browser, storage_state, scraper_cls, username, 'friends')
+                # Enable photos scraping for Facebook if max_photos > 0
+                if req.max_photos > 0:
+                    commenters = await self._fb_list_with_fresh_context(browser, storage_state, scraper_cls, username, 'commenters', req.max_photos)
+                    reactors = await self._fb_list_with_fresh_context(browser, storage_state, scraper_cls, username, 'reactors', req.max_photos)
+                else:
+                    commenters = []
+                    reactors = []
+            else:
+                followers = await scraper.get_followers(username)
+                following = await scraper.get_following(username)
+                friends = await scraper.get_friends(username)
+                commenters = await scraper.get_commenters(username, req.max_photos)
+                reactors = await scraper.get_reactors(username, req.max_photos)
 
             # Ingest root
             agg.add_root(make_profile(platform, root_profile['username'], root_profile.get('full_name'), root_profile.get('profile_url'), root_profile.get('photo_url'), (platform, username)))
@@ -167,6 +228,48 @@ class ScrapeOrchestrator:
             logger.exception("orchestrator.scrape_error platform=%s username=%s", platform, username)
         finally:
             await context.close()
+
+    async def _fb_list_with_fresh_context(self, browser, storage_state, scraper_cls, username: str, list_type: str, max_items: int = 0) -> List[dict]:
+        """Execute a single Facebook list extraction with a fresh context to prevent crashes."""
+        logger.info(f"orchestrator.fb_fresh_context list={list_type} username={username}")
+        ctx = None
+        try:
+            ctx = await browser.new_context(
+                storage_state=storage_state,
+                viewport={'width': 1280, 'height': 720},
+                user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+                locale='en-US',
+            )
+            await ctx.add_init_script("""
+                Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
+                window.chrome = {runtime: {}};
+            """)
+            pg = await ctx.new_page()
+            scraper = scraper_cls(pg, 'facebook')
+            
+            if list_type == 'followers':
+                result = await scraper.get_followers(username)
+            elif list_type == 'following':
+                result = await scraper.get_following(username)
+            elif list_type == 'friends':
+                result = await scraper.get_friends(username)
+            elif list_type == 'commenters':
+                result = await scraper.get_commenters(username, max_items)
+            elif list_type == 'reactors':
+                result = await scraper.get_reactors(username, max_items)
+            else:
+                result = []
+            
+            return result
+        except Exception as e:
+            logger.error(f"orchestrator.fb_fresh_context_error list={list_type} username={username} error={e}")
+            return []
+        finally:
+            if ctx:
+                try:
+                    await ctx.close()
+                except Exception:
+                    pass
 
     # ------------------- Normalization & Ingestion ---------------------------
     def _normalize_user_item(self, platform: str, raw: Dict[str, Any]) -> Dict[str, Any]:  # noqa: D401

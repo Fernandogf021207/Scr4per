@@ -137,7 +137,35 @@ async def scrap_comentadores_instagram(page, perfil_url, username, max_posts=5):
                 scroll_attempts=0; max_scrolls=15; no_new=0
                 while scroll_attempts < max_scrolls and no_new < 3:
                     before=len(comentarios_dict)
-                    await page.evaluate("() => { const cs = document.querySelector('article section') || document.querySelector('div[role=\"button\"] section') || document.querySelector('section'); if (cs){ const sa = cs.querySelector('div[style*=\"overflow\"]') || cs.querySelector('div[style*=\"max-height\"]') || cs; sa.scrollTop += 300; } else { window.scrollBy(0,300); } }")
+                    # Scroll mejorado: intenta encontrar y scrollear el contenedor de comentarios
+                    try:
+                        scrolled = await page.evaluate("""
+                            () => {
+                                // Intentar encontrar contenedor scrolleable de comentarios
+                                const candidates = [
+                                    document.querySelector('article section div[style*="overflow"]'),
+                                    document.querySelector('article section div[style*="max-height"]'),
+                                    document.querySelector('div[role="dialog"] div[style*="overflow"]'),
+                                    document.querySelector('article section'),
+                                    document.querySelector('section'),
+                                ];
+                                for (const el of candidates) {
+                                    if (el && el.scrollHeight > el.clientHeight + 100) {
+                                        el.scrollTop += 400;
+                                        return true;
+                                    }
+                                }
+                                // Fallback: scroll general
+                                window.scrollBy(0, 400);
+                                return false;
+                            }
+                        """)
+                        if not scrolled:
+                            # Fallback adicional si evaluate falla
+                            await page.evaluate("() => { window.scrollBy(0, 400); }")
+                    except Exception:
+                        await page.evaluate("() => { window.scrollBy(0, 400); }")
+                    
                     await page.wait_for_timeout(1500)
                     # Procesar comentarios visibles: heurística simple buscando anchors de usuario
                     try:

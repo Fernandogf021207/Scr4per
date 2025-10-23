@@ -14,39 +14,67 @@ logger = logging.getLogger(__name__)
 def _ts() -> str:
     return time.strftime('%Y-%m-%dT%H:%M:%S', time.gmtime())
 
-async def navegar_a_lista(page, perfil_url: str, lista: str) -> bool:
+async def navegar_a_lista(page, perfil_url: str, lista: str):
+    # Map logical list types to actual Facebook paths
     suffix = {
-        'friends_all': 'friends_all',
+        'friends_all': 'friends',     # real route is /friends
         'followers': 'followers',
-        'followed': 'following',
+        'followed': 'following',      # followed == following
     }.get(lista, lista)
     perfil_url = normalize_input_url('facebook', perfil_url)
     base = perfil_url.rstrip('/')
     target = f"{base}/{suffix}/"
-    logger.info(f"{_ts()} facebook.nav start list={lista}")
+    logger.info(f"{_ts()} facebook.nav start list={lista} url={target}")
     start = time.time()
-    try:
-        await page.goto(target, timeout=15_000)
+    for attempt in (1, 2):
         try:
-            await page.wait_for_selector('div[role="main"]', timeout=2500)
-        except Exception:
-            pass
-        logger.info(f"{_ts()} facebook.nav ok list={lista} duration_ms={(time.time()-start)*1000:.0f}")
-        return True
-    except Exception as e:
-        logger.error(f"{_ts()} facebook.nav fail list={lista} error={e}")
-        return False
+            await page.goto(target, timeout=20_000, wait_until="domcontentloaded")
+            try:
+                await page.wait_for_selector('div[role="main"]', timeout=3000)
+            except Exception:
+                pass
+            # Check if redirected to login
+            current_url = page.url
+            if '/login' in current_url or 'login_attempt' in current_url:
+                logger.error(f"{_ts()} facebook.nav redirected_to_login list={lista} url={current_url}")
+                return None
+            logger.info(f"{_ts()} facebook.nav ok list={lista} duration_ms={(time.time()-start)*1000:.0f} attempt={attempt}")
+            return page
+        except Exception as e:
+            msg = str(e)
+            logger.error(f"{_ts()} facebook.nav fail list={lista} error={e} attempt={attempt}")
+            # If page crashed, try reopening a fresh page once
+            if 'Page crashed' in msg or 'Target closed' in msg:
+                try:
+                    ctx = page.context
+                    try:
+                        await page.close()
+                    except Exception:
+                        pass
+                    page = await ctx.new_page()
+                    continue  # retry with new page
+                except Exception:
+                    break
+            break
+    return None
 
 async def procesar_tarjetas_usuario(page, usuarios: Dict[str, dict], usuario_principal: str):
+    # Selectores más amplios para capturar diferentes estructuras de lista
     selectores = [
         'div[role="main"] a[href^="/profile.php?id="]',
         'div[role="main"] a[href^="/"][href*="?sk="]',
         'div[role="main"] a[href^="/"]:not([href*="photo"])',
         'div[role="main"] div:has(a[href^="/profile.php"], a[href^="/"])',
+        # Additional: followers/following may use different containers
+        'div[role="main"] a[role="link"]',
+        'div[role="main"] span a[href^="/"]',
+        'div[role="article"] a[href^="/"]',
     ]
+    total_links_found = 0
     for sel in selectores:
         try:
             links = await page.query_selector_all(sel)
+            total_links_found += len(links)
         except Exception:
             links = []
         for a in links:
@@ -92,13 +120,46 @@ async def procesar_tarjetas_usuario(page, usuarios: Dict[str, dict], usuario_pri
                 usuarios[url] = build_user_item('facebook', url, nombre or username, foto or '')
             except Exception:
                 continue
+    if total_links_found == 0:
+        logger.warning(f"{_ts()} facebook.list no_links_found user={usuario_principal}")
+        # Debug: save screenshot and HTML for manual inspection
+        try:
+            import os
+            debug_dir = os.path.join(os.path.dirname(__file__), '..', '..', '..', 'logs', 'debug_fb')
+            os.makedirs(debug_dir, exist_ok=True)
+            screenshot_path = os.path.join(debug_dir, f'empty_{usuario_principal}_{int(time.time())}.png')
+            await page.screenshot(path=screenshot_path)
+            html_path = screenshot_path.replace('.png', '.html')
+            with open(html_path, 'w', encoding='utf-8') as f:
+                f.write(await page.content())
+            logger.info(f"{_ts()} facebook.list debug_saved screenshot={screenshot_path}")
+        except Exception as dbg_err:
+            logger.warning(f"{_ts()} facebook.list debug_save_error err={dbg_err}")
 
 async def extraer_usuarios_listado(page, tipo_lista: str, usuario_principal: str) -> List[dict]:
     usuarios: Dict[str, dict] = {}
     cfg = FACEBOOK_CONFIG.get('scroll', {})
     max_scrolls_cfg = int(cfg.get('max_scrolls', 100))
-    max_scrolls = min(max_scrolls_cfg, 40)
+    max_scrolls = min(max_scrolls_cfg, 60)
     blocker = await start_list_blocking(page, 'facebook', phase=f'list.{tipo_lista}')
+    
+    # Debug: capture page state on first iteration
+    try:
+        main_content = await page.query_selector('div[role="main"]')
+        if main_content:
+            html_sample = await main_content.inner_html()
+            logger.info(f"{_ts()} facebook.list debug type={tipo_lista} main_html_length={len(html_sample)} first_200_chars={html_sample[:200]}")
+        else:
+            logger.warning(f"{_ts()} facebook.list debug type={tipo_lista} NO_MAIN_DIV url={page.url}")
+    except Exception as dbg_err:
+        logger.warning(f"{_ts()} facebook.list debug_error type={tipo_lista} err={dbg_err}")
+    
+    iter_state = {'count': 0}
+    # Heurísticas anti early-bottom para followers/followed
+    MIN_SCROLLS_FOR_DIRECT_BOTTOM = 8
+    MIN_TOTAL_FOR_DIRECT_BOTTOM = 120
+    BOTTOM_MARGIN = 700
+    bottom_state = {'candidate': False, 'candidate_iter': 0, 'candidate_total': 0, 'candidate_sh': 0}
     async def process_once() -> int:
         before = len(usuarios)
         await procesar_tarjetas_usuario(page, usuarios, usuario_principal)
@@ -109,24 +170,52 @@ async def extraer_usuarios_listado(page, tipo_lista: str, usuario_principal: str
         except Exception:
             pass
     async def bottom_check() -> bool:
+        if iter_state['count'] < 2:
+            return False
         try:
-            return await page.evaluate("() => (window.innerHeight + window.pageYOffset) >= (document.body.scrollHeight - 800)")
+            is_bottom, metrics = await page.evaluate(
+                f"() => [ (window.innerHeight + window.pageYOffset) >= (document.body.scrollHeight - {BOTTOM_MARGIN}), {{sh: document.body.scrollHeight}} ]"
+            )
         except Exception:
             return False
+        if not is_bottom:
+            if bottom_state['candidate']:
+                bottom_state['candidate'] = False
+            return False
+        total_actual = len(usuarios)
+        needs_double = (iter_state['count'] < MIN_SCROLLS_FOR_DIRECT_BOTTOM) or (total_actual < MIN_TOTAL_FOR_DIRECT_BOTTOM)
+        if not needs_double:
+            return True
+        sh = metrics.get('sh', 0)
+        if not bottom_state['candidate']:
+            bottom_state.update({'candidate': True, 'candidate_iter': iter_state['count'], 'candidate_total': total_actual, 'candidate_sh': sh})
+            logger.info(f"{_ts()} facebook.list bottom_defer type={tipo_lista} iter={iter_state['count']} total={total_actual} sh={sh}")
+            return False
+        stable_total = total_actual == bottom_state['candidate_total']
+        stable_sh = sh == bottom_state['candidate_sh']
+        if stable_total and stable_sh:
+            logger.info(f"{_ts()} facebook.list bottom_confirmed type={tipo_lista} iter={iter_state['count']} total={total_actual}")
+            return True
+        bottom_state.update({'candidate_iter': iter_state['count'], 'candidate_total': total_actual, 'candidate_sh': sh})
+        logger.info(f"{_ts()} facebook.list bottom_retry type={tipo_lista} iter={iter_state['count']} total={total_actual} sh={sh}")
+        return False
     stats = await scroll_loop(
         process_once=process_once,
         do_scroll=do_scroll,
         max_scrolls=max_scrolls,
         pause_ms=900,
-        stagnation_limit=3,
+        stagnation_limit=4,
         empty_limit=2,
         bottom_check=bottom_check,
-        adaptive=True,
+        adaptive=False,
         adaptive_decay_threshold=0.35,
         log_prefix=f"facebook.list type={tipo_lista}",
         timeout_ms=30000,
     )
-    await blocker.stop()
+    try:
+        await blocker.stop()
+    except Exception:
+        pass
     if stats['reason'] == 'timeout':
         logger.warning(f"{_ts()} facebook.list error.code=TIMEOUT type={tipo_lista} duration_ms={stats['duration_ms']}")
     if len(usuarios) == 0:
@@ -158,7 +247,7 @@ async def extraer_amigos_facebook(page, usuario_principal: str) -> List[dict]:
     MIN_TOTAL_FOR_DIRECT_BOTTOM = 180        # si total < 180 requerir doble confirmación
     BOTTOM_MARGIN = 700                      # margen px para considerar near-bottom
     MAX_SCROLLS_FRIENDS = 80                 # permitir más iteraciones para listas grandes (~1000)
-    TIMEOUT_MS_FRIENDS = 60000               # más tiempo para cargar grandes volúmenes
+    TIMEOUT_MS_FRIENDS = 120000               # más tiempo para cargar grandes volúmenes
     DOUBLE_CONFIRM_STABLE_SH = True          # requerir scrollHeight estable
     bottom_state = {
         'candidate': False,
@@ -257,7 +346,10 @@ async def extraer_amigos_facebook(page, usuario_principal: str) -> List[dict]:
         log_prefix="facebook.list type=friends_all",
         timeout_ms=TIMEOUT_MS_FRIENDS,
     )
-    await blocker.stop()
+    try:
+        await blocker.stop()
+    except Exception:
+        pass
 
     if stats['reason'] == 'timeout':
         logger.warning(f"{_ts()} facebook.list error.code=TIMEOUT type=friends_all duration_ms={stats['duration_ms']}")
@@ -267,19 +359,22 @@ async def extraer_amigos_facebook(page, usuario_principal: str) -> List[dict]:
     return list(amigos_dict.values())
 
 async def scrap_friends_all(page, perfil_url: str, username: str) -> List[dict]:
-    if not await navegar_a_lista(page, perfil_url, 'friends_all'):
+    nav_page = await navegar_a_lista(page, perfil_url, 'friends_all')
+    if not nav_page:
         return []
-    return await extraer_amigos_facebook(page, username)
+    return await extraer_amigos_facebook(nav_page, username)
 
 async def scrap_followers(page, perfil_url: str, username: str) -> List[dict]:
-    if not await navegar_a_lista(page, perfil_url, 'followers'):
+    nav_page = await navegar_a_lista(page, perfil_url, 'followers')
+    if not nav_page:
         return []
-    return await extraer_usuarios_listado(page, 'followers', username)
+    return await extraer_usuarios_listado(nav_page, 'followers', username)
 
 async def scrap_followed(page, perfil_url: str, username: str) -> List[dict]:
-    if not await navegar_a_lista(page, perfil_url, 'followed'):
+    nav_page = await navegar_a_lista(page, perfil_url, 'followed')
+    if not nav_page:
         return []
-    return await extraer_usuarios_listado(page, 'followed', username)
+    return await extraer_usuarios_listado(nav_page, 'followed', username)
 
 async def scrap_lista_facebook(page, perfil_url: str, tipo: str) -> List[dict]:
     perfil_url = normalize_input_url('facebook', perfil_url)

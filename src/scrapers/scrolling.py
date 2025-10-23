@@ -16,7 +16,7 @@ async def scroll_loop(
     *,
     process_once: Callable[[], Awaitable[int]],
     do_scroll: Callable[[], Awaitable[None]],
-    max_scrolls: int = 40,
+    max_scrolls: int = 100,
     pause_ms: int = 900,
     stagnation_limit: int = 4,
     empty_limit: int = 2,

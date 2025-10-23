@@ -9,9 +9,27 @@ from .scraper import (
     scrap_reacciones_fotos as fb_scrap_reactions,
 )
 from src.scrapers.base import PlatformScraper
+import logging
+
+logger = logging.getLogger(__name__)
 
 class FacebookScraperAdapter(PlatformScraper):
+    def __init__(self, page, platform: str):
+        super().__init__(page, platform)
+        self._browser = None  # Will be set by orchestrator if needed
+        self._storage_state = None
+        
+    async def _ensure_page_alive(self):
+        """Ensure self.page is open; recreate entire context if crashed."""
+        try:
+            # Quick check: if page is closed, this will throw
+            await self.page.evaluate("1")
+        except Exception:
+            logger.warning(f"facebook.adapter page_crashed, need fresh context")
+            raise  # Signal to orchestrator that we need a fresh start
+
     async def get_root_profile(self, username: str) -> Dict[str, Any]:
+        await self._ensure_page_alive()
         perfil_url = f"https://www.facebook.com/{username}/"
         datos = await obtener_datos_usuario_facebook(self.page, perfil_url)
         return {
@@ -23,21 +41,26 @@ class FacebookScraperAdapter(PlatformScraper):
         }
 
     async def get_followers(self, username: str) -> List[dict]:
+        await self._ensure_page_alive()
         perfil_url = f"https://www.facebook.com/{username}/"
         return await fb_scrap_followers(self.page, perfil_url, username)
 
     async def get_following(self, username: str) -> List[dict]:
+        await self._ensure_page_alive()
         perfil_url = f"https://www.facebook.com/{username}/"
         return await fb_scrap_followed(self.page, perfil_url, username)
 
     async def get_friends(self, username: str) -> List[dict]:
+        await self._ensure_page_alive()
         perfil_url = f"https://www.facebook.com/{username}/"
         return await fb_scrap_friends(self.page, perfil_url, username)
 
     async def get_commenters(self, username: str, max_items: int) -> List[dict]:
+        await self._ensure_page_alive()
         perfil_url = f"https://www.facebook.com/{username}/"
         return await fb_scrap_comments(self.page, perfil_url, username, max_fotos=max_items)
 
     async def get_reactors(self, username: str, max_items: int) -> List[dict]:
+        await self._ensure_page_alive()
         perfil_url = f"https://www.facebook.com/{username}/"
         return await fb_scrap_reactions(self.page, perfil_url, username, max_fotos=max_items, incluir_comentarios=False)

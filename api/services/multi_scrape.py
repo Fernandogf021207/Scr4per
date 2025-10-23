@@ -2,6 +2,7 @@ from __future__ import annotations
 from typing import List, Dict, Any
 
 from fastapi import HTTPException
+import os
 
 from .aggregation import normalize_username, valid_username
 from ..deps import storage_state_for
@@ -30,12 +31,13 @@ async def multi_scrape_execute(requests: List[Dict[str, Any]]) -> Dict[str, Any]
         if not valid_username(normalize_username(r.get('username'))):
             raise HTTPException(status_code=422, detail={"code": "VALIDATION_ERROR", "message": f"Invalid username: {r.get('username')}"})
 
+    headless_env = (os.getenv('SCRAPER_HEADLESS', 'true').lower() == 'true')
     orchestrator = ScrapeOrchestrator(
         scraper_registry=SCRAPER_REGISTRY,
         storage_state_resolver=lambda p: storage_state_for(p),
         max_roots=MAX_ROOTS,
         persist=True,
-        headless=True,
+        headless=headless_env,
         max_concurrency=DEFAULT_MAX_CONCURRENCY if len(requests) > 1 else 1,
         download_photos=True,
         photo_mode='download',  # podría hacerse configurable luego
