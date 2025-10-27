@@ -1,5 +1,6 @@
 import os
 import sys
+import logging
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -12,6 +13,19 @@ if ROOT_DIR not in sys.path:
 
 def create_app() -> FastAPI:
     app = FastAPI(title="Scr4per DB API", version="0.1.0")
+
+    # Ensure logging configured (scripts call setup_logging, API didn't)
+    try:
+        # Avoid reconfiguring if already handled by uvicorn or previous setup
+        if not logging.getLogger().handlers:
+            from src.utils.logging_config import setup_logging  # type: ignore
+            setup_logging()
+        else:
+            # Raise root level if default WARNING so our scraper INFO logs show
+            if logging.getLogger().level > logging.INFO:
+                logging.getLogger().setLevel(logging.INFO)
+    except Exception as e:  # pragma: no cover
+        logging.getLogger(__name__).warning(f"logging setup skip error={e}")
 
     # CORS
     _default_frontend_origins = [
@@ -53,6 +67,8 @@ def create_app() -> FastAPI:
     from .routers.scrape import router as scrape_router
     from .routers.export import router as export_router
     from .routers.files import router as files_router
+    from .routers.multi_scrape import router as multi_scrape_router
+    from .routers.multi_related import router as multi_related_router
 
     app.include_router(health_router)
     app.include_router(proxy_router)
@@ -66,6 +82,8 @@ def create_app() -> FastAPI:
     app.include_router(scrape_router)
     app.include_router(export_router)
     app.include_router(files_router, prefix="/files")
+    app.include_router(multi_scrape_router)
+    app.include_router(multi_related_router)
 
     return app
 
