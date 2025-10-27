@@ -53,3 +53,18 @@ class ExportInput(BaseModel):
     model_config = {
         'populate_by_name': True,
     }
+
+# Support multiple export blocks to allow concatenating several objectives
+class ExportBlock(BaseModel):
+    perfil_objetivo: Dict[str, Any] = Field(alias="Perfil objetivo")
+    perfiles_relacionados: List[Dict[str, Any]] = Field(alias="Perfiles relacionados")
+    model_config = {
+        'populate_by_name': True,
+    }
+
+class MultiExportInput(BaseModel):
+    # Frontend should send an array of blocks under key "Perfiles"
+    bloques: List[ExportBlock] = Field(alias="Perfiles")
+    model_config = {
+        'populate_by_name': True,
+    }

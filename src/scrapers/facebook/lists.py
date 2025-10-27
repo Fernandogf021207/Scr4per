@@ -8,6 +8,7 @@ from src.scrapers.scrolling import scroll_loop
 from src.utils.list_parser import build_user_item
 from src.utils.url import normalize_input_url
 from src.scrapers.resource_blocking import start_list_blocking
+from src.utils.dom import find_scroll_container, scroll_element, scroll_window
 
 logger = logging.getLogger(__name__)
 
@@ -142,6 +143,33 @@ async def extraer_usuarios_listado(page, tipo_lista: str, usuario_principal: str
     max_scrolls_cfg = int(cfg.get('max_scrolls', 100))
     max_scrolls = min(max_scrolls_cfg, 60)
     blocker = await start_list_blocking(page, 'facebook', phase=f'list.{tipo_lista}')
+    # Intentar identificar un contenedor scrolleable; si no, usar ventana
+    container = None
+    try:
+        # Primero probar modal (raro en FB listas), si no, buscar un contenedor grande en main
+        container = await find_scroll_container(page)
+        if not container:
+            container = await page.evaluate_handle(
+                """
+                () => {
+                    const main = document.querySelector('div[role="main"]') || document.body;
+                    let best = null, maxDelta = 0;
+                    const all = main.querySelectorAll('*');
+                    for (const el of all) {
+                        const sh = el.scrollHeight || 0; const ch = el.clientHeight || 0;
+                        if (sh > ch + 200) {
+                            const st = getComputedStyle(el).overflowY;
+                            if (st === 'auto' || st === 'scroll') {
+                                const delta = sh - ch; if (delta > maxDelta) { maxDelta = delta; best = el; }
+                            }
+                        }
+                    }
+                    return best;
+                }
+                """
+            )
+    except Exception:
+        container = None
     
     # Debug: capture page state on first iteration
     try:
@@ -166,16 +194,24 @@ async def extraer_usuarios_listado(page, tipo_lista: str, usuario_principal: str
         return len(usuarios) - before
     async def do_scroll():
         try:
-            await page.evaluate("window.scrollBy(0, document.documentElement.clientHeight * 0.7)")
+            if container:
+                await scroll_element(container, 800)
+            else:
+                await scroll_window(page, 0)
         except Exception:
             pass
     async def bottom_check() -> bool:
         if iter_state['count'] < 2:
             return False
         try:
-            is_bottom, metrics = await page.evaluate(
-                f"() => [ (window.innerHeight + window.pageYOffset) >= (document.body.scrollHeight - {BOTTOM_MARGIN}), {{sh: document.body.scrollHeight}} ]"
-            )
+            if container:
+                is_bottom, metrics = await container.evaluate(
+                    "el => [ (el.scrollTop + el.clientHeight) >= (el.scrollHeight - 120), {sh: el.scrollHeight} ]"
+                )
+            else:
+                is_bottom, metrics = await page.evaluate(
+                    f"() => [ (window.innerHeight + window.pageYOffset) >= (document.body.scrollHeight - {BOTTOM_MARGIN}), {{sh: document.body.scrollHeight}} ]"
+                )
         except Exception:
             return False
         if not is_bottom:
@@ -207,7 +243,7 @@ async def extraer_usuarios_listado(page, tipo_lista: str, usuario_principal: str
         stagnation_limit=4,
         empty_limit=2,
         bottom_check=bottom_check,
-        adaptive=False,
+        adaptive=True,
         adaptive_decay_threshold=0.35,
         log_prefix=f"facebook.list type={tipo_lista}",
         timeout_ms=30000,
@@ -293,7 +329,34 @@ async def extraer_amigos_facebook(page, usuario_principal: str) -> List[dict]:
 
     async def do_scroll():
         try:
-            await page.evaluate("window.scrollBy(0, document.documentElement.clientHeight * 0.8)")
+            # Intentar contenedor scrolleable en friends también
+            cont = None
+            try:
+                cont = await page.evaluate_handle(
+                    """
+                    () => {
+                        const main = document.querySelector('div[role="main"]') || document.body;
+                        let best = null, maxDelta = 0;
+                        const all = main.querySelectorAll('*');
+                        for (const el of all) {
+                            const sh = el.scrollHeight || 0; const ch = el.clientHeight || 0;
+                            if (sh > ch + 200) {
+                                const st = getComputedStyle(el).overflowY;
+                                if (st === 'auto' || st === 'scroll') {
+                                    const delta = sh - ch; if (delta > maxDelta) { maxDelta = delta; best = el; }
+                                }
+                            }
+                        }
+                        return best;
+                    }
+                    """
+                )
+            except Exception:
+                cont = None
+            if cont:
+                await scroll_element(cont, 800)
+            else:
+                await page.evaluate("window.scrollBy(0, document.documentElement.clientHeight * 0.8)")
         except Exception:
             try:
                 await page.mouse.wheel(0, 2500)
@@ -305,7 +368,34 @@ async def extraer_amigos_facebook(page, usuario_principal: str) -> List[dict]:
         if iter_state['count'] < 3:
             return False
         try:
-            is_bottom, metrics = await page.evaluate(f"() => [ (window.innerHeight + window.pageYOffset) >= (document.body.scrollHeight - {BOTTOM_MARGIN}), {{sh: document.body.scrollHeight, y: window.pageYOffset, ih: window.innerHeight}} ]")
+            # Si hay contenedor scrolleable, usar sus métricas
+            cont = None
+            try:
+                cont = await page.evaluate_handle(
+                    """
+                    () => {
+                        const main = document.querySelector('div[role="main"]') || document.body;
+                        let best = null, maxDelta = 0;
+                        const all = main.querySelectorAll('*');
+                        for (const el of all) {
+                            const sh = el.scrollHeight || 0; const ch = el.clientHeight || 0;
+                            if (sh > ch + 200) {
+                                const st = getComputedStyle(el).overflowY;
+                                if (st === 'auto' || st === 'scroll') {
+                                    const delta = sh - ch; if (delta > maxDelta) { maxDelta = delta; best = el; }
+                                }
+                            }
+                        }
+                        return best;
+                    }
+                    """
+                )
+            except Exception:
+                cont = None
+            if cont:
+                is_bottom, metrics = await cont.evaluate("el => [ (el.scrollTop + el.clientHeight) >= (el.scrollHeight - 120), {sh: el.scrollHeight, y: el.scrollTop, ih: el.clientHeight} ]")
+            else:
+                is_bottom, metrics = await page.evaluate(f"() => [ (window.innerHeight + window.pageYOffset) >= (document.body.scrollHeight - {BOTTOM_MARGIN}), {{sh: document.body.scrollHeight, y: window.pageYOffset, ih: window.innerHeight}} ]")
         except Exception:
             return False
         if not is_bottom:

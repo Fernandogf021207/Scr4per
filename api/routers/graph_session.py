@@ -21,13 +21,15 @@ def load_graph_session(platform: Literal['x','instagram','facebook'], owner_user
                 """, (owner_username,))
                 row = cur.fetchone()
                 if not row:
-                    return {"elements": None}
+                    # 404 is clearer for caller than silently returning null
+                    from fastapi import status
+                    raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="graph_session not found")
                 elements = row.get('elements')
                 path = row.get('elements_path')
                 if path:
                     try:
-                        root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
-                        full_path = os.path.join(root, path) if not os.path.isabs(path) else path
+                        # paths.elements_path is stored relative to REPO_ROOT
+                        full_path = path if os.path.isabs(path) else os.path.join(REPO_ROOT, path)
                         with open(full_path, 'r', encoding='utf-8') as fh:
                             elements = json.load(fh)
                     except Exception:
@@ -46,8 +48,9 @@ def save_graph_session(body: dict):
         style = body.get("style")
         layout = body.get("layout")
         schema = _schema(platform)
-        repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
-        base_dir = os.path.join(repo_root, '..', 'data', 'storage', 'graph_session')
+        # Use centralized paths to avoid drifting directories
+        ensure_dirs()
+        base_dir = GRAPH_SESSION_DIR
         os.makedirs(base_dir, exist_ok=True)
 
         filename = f"{platform}__{owner_username}.json"
