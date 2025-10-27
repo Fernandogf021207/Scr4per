@@ -4,6 +4,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from paths import STORAGE_DIR, PUBLIC_IMAGES_PREFIX_PRIMARY, PUBLIC_IMAGES_PREFIX_COMPAT, ensure_dirs
+from src.utils.logging_config import setup_logging
 
 # Make repo root importable
 ROOT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
@@ -11,6 +12,8 @@ if ROOT_DIR not in sys.path:
     sys.path.append(ROOT_DIR)
 
 def create_app() -> FastAPI:
+    # Configure logging early
+    setup_logging()
     app = FastAPI(title="Scr4per DB API", version="0.1.0")
 
     # CORS
@@ -53,6 +56,7 @@ def create_app() -> FastAPI:
     from .routers.scrape import router as scrape_router
     from .routers.export import router as export_router
     from .routers.files import router as files_router
+    from .routers.multi_scrape import router as multi_scrape_router
 
     app.include_router(health_router)
     app.include_router(proxy_router)
@@ -66,6 +70,7 @@ def create_app() -> FastAPI:
     app.include_router(scrape_router)
     app.include_router(export_router)
     app.include_router(files_router, prefix="/files")
+    app.include_router(multi_scrape_router)
 
     return app
 

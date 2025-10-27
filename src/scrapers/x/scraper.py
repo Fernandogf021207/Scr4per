@@ -17,7 +17,7 @@ logger = logging.getLogger(__name__)
 
 async def extraer_usuarios_lista(page, tipo_lista="seguidores"):
     """Extraer usuarios de una lista (seguidores o seguidos) con scroll mejorado"""
-    print(f"Cargando {tipo_lista}...")
+    logger.info("Cargando %s...", tipo_lista)
     usuarios_dict = {}
     
     scroll_attempts = 0
@@ -38,15 +38,15 @@ async def extraer_usuarios_lista(page, tipo_lista="seguidores"):
             
             if len(usuarios_dict) > current_user_count:
                 no_new_content_count = 0
-                print(f"  📊 {tipo_lista}: {len(usuarios_dict)} usuarios encontrados (scroll {scroll_attempts + 1})")
+                logger.info("%s: %d usuarios encontrados (scroll %d)", tipo_lista, len(usuarios_dict), scroll_attempts + 1)
             else:
                 no_new_content_count += 1
-                print(f"  ⏳ Sin nuevos usuarios en scroll {scroll_attempts + 1} (intentos sin contenido: {no_new_content_count})")
+                logger.info("Sin nuevos usuarios en scroll %d (intentos sin contenido: %d)", scroll_attempts + 1, no_new_content_count)
             
             scroll_attempts += 1
             
             if scroll_attempts % 10 == 0:
-                print(f"  🔄 Pausa para evitar rate limiting... ({len(usuarios_dict)} usuarios hasta ahora)")
+                logger.info("Pausa para evitar rate limiting... (%d usuarios hasta ahora)", len(usuarios_dict))
                 await page.wait_for_timeout(5000)
             
             is_at_bottom = await page.evaluate(
@@ -54,7 +54,7 @@ async def extraer_usuarios_lista(page, tipo_lista="seguidores"):
             )
             
             if is_at_bottom and no_new_content_count >= 3:
-                print(f"  ✅ Llegamos al final de la lista de {tipo_lista}")
+                logger.info("Llegamos al final de la lista de %s", tipo_lista)
                 break
                 
         except Exception as e:
@@ -63,14 +63,14 @@ async def extraer_usuarios_lista(page, tipo_lista="seguidores"):
             
         await page.wait_for_timeout(1000)
 
-    print(f"✅ Scroll completado para {tipo_lista}. Total de scrolls: {scroll_attempts}")
-    print(f"📊 Usuarios únicos extraídos: {len(usuarios_dict)}")
+    logger.info("Scroll completado para %s. Total de scrolls: %d", tipo_lista, scroll_attempts)
+    logger.info("Usuarios únicos extraídos: %d", len(usuarios_dict))
     
     return list(usuarios_dict.values())
 
 async def extraer_comentadores_x(page, max_posts=10):
     """Extraer usuarios que han comentado en los posts del usuario principal"""
-    print("Cargando comentarios de posts...")
+    logger.info("Cargando comentarios de posts...")
     comentadores_dict = {}
     
     scroll_attempts = 0
@@ -87,9 +87,9 @@ async def extraer_comentadores_x(page, max_posts=10):
             if not posts:
                 no_new_content_count += 1
                 if no_new_content_count >= max_no_new_content:
-                    print("  ✅ No más posts encontrados")
+                    logger.info("No más posts encontrados")
                     break
-                print(f"  ⏳ No se encontraron posts en scroll {scroll_attempts + 1}")
+                logger.info("No se encontraron posts en scroll %d", scroll_attempts + 1)
                 await scroll_window(page, 0)
                 await page.wait_for_timeout(2000)
                 scroll_attempts += 1
@@ -191,7 +191,7 @@ async def extraer_comentadores_x(page, max_posts=10):
                                     item = build_user_item('x', url_usuario, nombre_completo, url_foto)
                                     item['post_url'] = normalize_post_url('x', post_url)
                                     comentadores_dict[url_limpia] = item
-                                    logger.info(f"Comentador añadido: @{username_usuario}")
+                                    logger.info("Comentador añadido: @%s", username_usuario)
                                     
                                 except Exception as e:
                                     logger.warning(f"Error procesando comentario: {e}")
@@ -203,7 +203,7 @@ async def extraer_comentadores_x(page, max_posts=10):
                         logger.warning(f"No se encontraron comentarios en el post {post_url}")
                     
                     posts_encontrados += 1
-                    print(f"  📝 Post {posts_encontrados}/{max_posts} procesado. Comentadores: {len(comentadores_dict)}")
+                    logger.info("Post %d/%d procesado. Comentadores acumulados: %d", posts_encontrados, max_posts, len(comentadores_dict))
                     
                     await page.go_back()
                     await page.wait_for_timeout(3000)
@@ -219,7 +219,7 @@ async def extraer_comentadores_x(page, max_posts=10):
             scroll_attempts += 1
             
             if scroll_attempts % 5 == 0:
-                print(f"  🔄 Pausa para evitar rate limiting... ({posts_encontrados} posts procesados)")
+                logger.info("Pausa para evitar rate limiting... (%d posts procesados)", posts_encontrados)
                 await page.wait_for_timeout(5000)
                 
         except Exception as e:
@@ -228,18 +228,14 @@ async def extraer_comentadores_x(page, max_posts=10):
             await page.wait_for_timeout(1000)
     
     if not comentadores_dict:
-        print("⚠️ No se encontraron comentadores. Posibles causas:")
-        print("  - Los posts no tienen comentarios visibles")
-        print("  - El perfil es privado o los comentarios están restringidos")
-        print("  - La sesión no está autenticada o no tiene permisos")
-        print("  - X cambió la estructura de los comentarios")
+        logger.warning("No se encontraron comentadores. Posibles causas: posts sin comentarios visibles, perfil privado/restringido, sesión sin permisos, o cambios en el DOM")
     
-    print(f"✅ Extracción de comentadores completada. Total: {len(comentadores_dict)}")
+    logger.info("Extracción de comentadores completada. Total: %d", len(comentadores_dict))
     return list(comentadores_dict.values())
 
 async def obtener_datos_usuario_principal(page, perfil_url):
     """Obtener datos del usuario principal"""
-    print("Obteniendo datos del perfil principal...")
+    logger.info("Obteniendo datos del perfil principal...")
     await page.goto(perfil_url)
     await page.wait_for_timeout(5000)
     
@@ -248,7 +244,7 @@ async def obtener_datos_usuario_principal(page, perfil_url):
     nombre_completo = datos_usuario_x['nombre_completo']
     foto_perfil = await obtener_foto_perfil_x(page)
     
-    print(f"Usuario detectado: @{username} ({nombre_completo})")
+    logger.info("Usuario detectado: @%s (%s)", username, nombre_completo)
     
     return {
         'username': username,
@@ -259,46 +255,46 @@ async def obtener_datos_usuario_principal(page, perfil_url):
 
 async def scrap_seguidores(page, perfil_url, username):
     """Scrapear seguidores del usuario"""
-    print("\n🔄 Navegando a seguidores...")
+    logger.info("Navegando a seguidores...")
     try:
         perfil_url = normalize_input_url('x', perfil_url)
         followers_url = f"{perfil_url.rstrip('/')}/followers"
         await page.goto(followers_url)
         await page.wait_for_timeout(3000)
         seguidores = await extraer_usuarios_lista(page, "seguidores")
-        print(f"📊 Seguidores encontrados: {len(seguidores)}")
+        logger.info("Seguidores encontrados: %d", len(seguidores))
         return seguidores
     except Exception as e:
-        print(f"❌ Error extrayendo seguidores: {e}")
+        logger.exception(f"Error extrayendo seguidores: {e}")
         return []
 
 async def scrap_seguidos(page, perfil_url, username):
     """Scrapear usuarios seguidos por el usuario"""
-    print("\n🔄 Navegando a seguidos...")
+    logger.info("Navegando a seguidos...")
     try:
         perfil_url = normalize_input_url('x', perfil_url)
         following_url = f"{perfil_url.rstrip('/')}/following"
         await page.goto(following_url)
         await page.wait_for_timeout(3000)
         seguidos = await extraer_usuarios_lista(page, "seguidos")
-        print(f"📊 Seguidos encontrados: {len(seguidos)}")
+        logger.info("Seguidos encontrados: %d", len(seguidos))
         return seguidos
     except Exception as e:
-        print(f"❌ Error extrayendo seguidos: {e}")
+        logger.exception(f"Error extrayendo seguidos: {e}")
         return []
 
 async def scrap_comentadores(page, perfil_url, username, max_posts: int = 10):
     """Scrapear usuarios que comentaron los posts del usuario.
     max_posts limita la cantidad de posts del perfil objetivo a procesar.
     """
-    print("\n🔄 Navegando al perfil para extraer comentadores...")
+    logger.info("Navegando al perfil para extraer comentadores...")
     try:
         perfil_url = normalize_input_url('x', perfil_url)
         await page.goto(perfil_url)
         await page.wait_for_timeout(3000)
         comentadores = await extraer_comentadores_x(page, max_posts=max_posts)
-        print(f"📊 Comentadores encontrados: {len(comentadores)}")
+        logger.info("Comentadores encontrados: %d", len(comentadores))
         return comentadores
     except Exception as e:
-        print(f"❌ Error extrayendo comentadores: {e}")
+        logger.exception(f"Error extrayendo comentadores: {e}")
         return []

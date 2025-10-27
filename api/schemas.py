@@ -1,6 +1,6 @@
 from typing import Optional, Literal, List, Dict, Any
 from datetime import datetime
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, validator
 
 class ProfileIn(BaseModel):
     platform: Literal['x', 'instagram', 'facebook']
@@ -52,3 +52,90 @@ class ExportInput(BaseModel):
     perfiles_relacionados: List[Dict[str, Any]] = Field(alias="Perfiles relacionados")
     class Config:
         allow_population_by_field_name = True
+
+
+# ==========================
+# Multi-scrape (schema v2)
+# ==========================
+
+USERNAME_REGEX = r'^[A-Za-z0-9._-]{2,60}$'
+
+
+class MultiScrapeRoot(BaseModel):
+    platform: Literal['x', 'instagram', 'facebook']
+    username: str  # 2..60, alfanumérico + ._-
+    max_photos: int = Field(5, ge=0, le=50)
+
+    @validator('username')
+    def _username_valid(cls, v: str):
+        import re
+        if not re.match(USERNAME_REGEX, v or ''):
+            raise ValueError('invalid username (2..60, A-Za-z0-9._-)')
+        return v
+
+
+class MultiScrapeRequest(BaseModel):
+    roots: List[MultiScrapeRoot] = Field(..., description="1..5 roots")
+    headless: bool = True
+    max_concurrency: Optional[int] = Field(None, ge=1, le=3)
+    persist: bool = True
+    strict_sessions: bool = False
+
+    @validator('roots')
+    def _check_roots(cls, v: List[MultiScrapeRoot]):
+        if not v:
+            raise ValueError('roots must contain at least 1 item')
+        if len(v) > 5:
+            raise ValueError('Max 5 roots')
+        return v
+
+    @validator('max_concurrency', always=True)
+    def _default_max_concurrency(cls, v: Optional[int], values: Dict[str, Any]):
+        if v is not None:
+            return v
+        roots = values.get('roots') or []
+        return 1 if len(roots) <= 1 else 3
+
+
+class MultiScrapeProfileItem(BaseModel):
+    platform: Literal['x', 'instagram', 'facebook']
+    username: str
+    full_name: Optional[str] = None
+    profile_url: Optional[str] = None
+    photo_url: Optional[str] = None
+    sources: List[str] = []
+
+    @validator('username')
+    def _username_valid(cls, v: str):
+        import re
+        if not re.match(USERNAME_REGEX, v or ''):
+            raise ValueError('invalid username (2..60, A-Za-z0-9._-)')
+        return v
+
+
+class MultiScrapeRelationItem(BaseModel):
+    platform: Literal['x', 'instagram', 'facebook']
+    source: str
+    target: str
+    type: Literal['follower', 'following', 'friend']
+
+    @validator('source', 'target')
+    def _username_valid(cls, v: str):
+        import re
+        if not re.match(USERNAME_REGEX, v or ''):
+            raise ValueError('invalid username (2..60, A-Za-z0-9._-)')
+        return v
+
+
+class MultiScrapeWarning(BaseModel):
+    code: str
+    message: str
+
+
+class MultiScrapeResponse(BaseModel):
+    schema_version: int = 2
+    root_profiles: List[str]
+    profiles: List[MultiScrapeProfileItem]
+    relations: List[MultiScrapeRelationItem]
+    warnings: List[MultiScrapeWarning] = []
+    meta: Dict[str, Any]
