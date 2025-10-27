@@ -3,7 +3,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from typing import Any
 
 from ..schemas_multi import MultiScrapeRequest, MultiScrapeResponse
-from ..services.multi_scrape import multi_scrape_execute
+from ..services import multi_scrape as ms
 import uuid
 import logging
 
@@ -16,7 +16,7 @@ async def multi_scrape(payload: MultiScrapeRequest) -> Any:
     request_id = uuid.uuid4().hex[:12]
     logger.info(f"multi_scrape.start rid={request_id} roots={len(payload.roots)}")
     try:
-        data = await multi_scrape_execute([
+        data = await ms.multi_scrape_execute([
             {"platform": r.platform, "username": r.username, "max_photos": r.max_photos} for r in payload.roots
         ])
         # Inject correlation id into meta if present

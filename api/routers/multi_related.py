@@ -12,7 +12,7 @@ import uuid
 import logging
 
 from ..schemas_multi import MultiRelatedRequest, MultiRelatedResponse
-from ..services.multi_related import multi_related_execute
+from ..services import multi_related as mr
 
 logger = logging.getLogger(__name__)
 
@@ -74,8 +74,8 @@ async def multi_related(payload: MultiRelatedRequest) -> Any:
             'relation_types': payload.relation_types,
             'max_profiles': payload.max_profiles,
         }
-        
-        data = await multi_related_execute(request_data)
+
+        data = await mr.multi_related_execute(request_data)
         
         # Inject request ID into meta
         if isinstance(data, dict) and 'meta' in data and isinstance(data['meta'], dict):

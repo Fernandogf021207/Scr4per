@@ -16,8 +16,10 @@ scraper.log
 src/config/secrets.py
 
 # Virtual environment
-venv/
+venvs
 .env
+
+scripts/
 
 # IDE files
 .vscode/

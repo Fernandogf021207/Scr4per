@@ -143,7 +143,7 @@ class GraphExtractor:
 
                         cur.execute(
                             f"""
-                            SELECT p.id, p.platform, p.username, r.rel_type, r.created_at
+                            SELECT p.id, p.platform, p.username, r.rel_type, r.collected_at
                             FROM {schema}.relationships r
                             JOIN {schema}.profiles p ON p.id = r.related_profile_id
                             WHERE r.owner_profile_id = %s{rel_filter}
@@ -163,7 +163,7 @@ class GraphExtractor:
                                     source=current_key[1],
                                     target=related_key[1],
                                     rel_type=row['rel_type'],
-                                    created_at=row.get('created_at')
+                                    created_at=row.get('collected_at')
                                 )
                                 continue
 
@@ -187,7 +187,7 @@ class GraphExtractor:
                                 source=current_key[1],
                                 target=related_key[1],
                                 rel_type=row['rel_type'],
-                                created_at=row.get('created_at')
+                                created_at=row.get('collected_at')
                             )
 
                             # Add to queue for next level expansion
@@ -349,6 +349,15 @@ async def multi_related_execute(request_data: Dict[str, Any]) -> Dict[str, Any]:
         {'platform': r.platform, 'username': r.username} if hasattr(r, 'platform') else r
         for r in roots
     ]
+
+    # Normalize relation_types to DB enum values if provided (accept Spanish synonyms)
+    if relation_types:
+        norm_map = {
+            'seguidor': 'follower',
+            'seguido': 'following',
+            'amigo': 'friend',
+        }
+        relation_types = [norm_map.get(rt.lower(), rt) for rt in relation_types]
 
     extractor = GraphExtractor(
         roots=roots_list,

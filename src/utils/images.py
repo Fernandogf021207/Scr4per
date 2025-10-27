@@ -4,7 +4,10 @@ from typing import Optional
 import httpx
 from urllib.parse import quote_plus, urlencode
 import asyncio
+import logging
 from paths import IMAGES_DIR, PUBLIC_IMAGES_PREFIX_PRIMARY, ensure_dirs
+
+logger = logging.getLogger(__name__)
 
 
 def _safe_filename(name: str) -> str:
@@ -114,7 +117,8 @@ async def download_profile_image(
                 f.write(resp.content)
             os.replace(tmp_path, file_path)
         return f"{PUBLIC_IMAGES_PREFIX_PRIMARY}/{filename}"
-    except Exception:
+    except Exception as e:
+        logger.debug(f"download_profile_image httpx failed username={username} url={photo_url[:100]} err={type(e).__name__}:{str(e)[:100]}")
         # Fallback using Playwright page with session cookies if provided
         if page is not None:
             try:
@@ -128,11 +132,16 @@ async def download_profile_image(
                     with open(tmp_path, "wb") as f:
                         f.write(await r.body())
                     os.replace(tmp_path, file_path)
+                    logger.info(f"download_profile_image playwright success username={username}")
                     return f"{PUBLIC_IMAGES_PREFIX_PRIMARY}/{filename}"
-            except Exception:
+                else:
+                    logger.warning(f"download_profile_image playwright failed status={r.status} username={username} url={photo_url[:100]}")
+            except Exception as pe:
+                logger.warning(f"download_profile_image playwright exception username={username} err={type(pe).__name__}:{str(pe)[:100]}")
                 pass
         # Final fallback policy
         if on_failure == "proxy":
+            logger.info(f"download_profile_image fallback to proxy username={username}")
             return f"/proxy-image?{urlencode({'url': photo_url})}"
         if on_failure == "raise":
             raise RuntimeError("Failed to download image and no fallback allowed")
@@ -164,14 +173,15 @@ async def local_or_proxy_photo_url(
     if mode == "external":
         return photo_url
     # default -> download with retries
-    # If already a local storage path, return as-is
-    if str(photo_url).startswith('/storage/'):
+    # If already a local storage path, return as-is (accept both /storage/ and /../data/storage/ variants)
+    photo_str = str(photo_url)
+    if photo_str.startswith('/storage/') or photo_str.startswith('/../data/storage/'):
         return photo_url
 
     attempts = max(1, int(retries))
     for i in range(attempts):
         result = await download_profile_image(photo_url, username, page=page, on_failure='proxy')
-        if result and (result.startswith('/storage/') or result.startswith(PUBLIC_IMAGES_PREFIX_PRIMARY)):
+        if result and (result.startswith('/storage/') or result.startswith(PUBLIC_IMAGES_PREFIX_PRIMARY) or result.startswith('/../data/storage/')):
             return result
         if i < attempts - 1:
             try:

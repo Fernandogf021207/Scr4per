@@ -89,11 +89,20 @@ async def extraer_usuarios_instagram(page, tipo_lista="seguidores", usuario_prin
         return len(usuarios_dict) - before
 
     async def do_scroll():
+        nonlocal container
         try:
+            # Re-evaluar contenedor periódicamente por si IG re-renderiza el diálogo
+            if (iter_state['count'] % 5 == 0) or (not container):
+                try:
+                    c2 = await find_scroll_container(page)
+                    if c2:
+                        container = c2
+                except Exception:
+                    pass
             if container:
-                await scroll_element(container, 900)
+                await scroll_element(container, 1000)
             else:
-                await scroll_window(page, 800)
+                await scroll_window(page, 900)
         except Exception:
             pass
 
@@ -105,9 +114,9 @@ async def extraer_usuarios_instagram(page, tipo_lista="seguidores", usuario_prin
         'candidate_sh': 0,
     }
     # Parámetros heurísticos (se pueden mover a config posteriormente)
-    EARLY_BOTTOM_MIN_SCROLLS = 7   # exigir al menos este número de scrolls antes de aceptar bottom si total aún bajo
-    EARLY_BOTTOM_MIN_TOTAL = 80    # si total < este umbral, pedir doble confirmación
-    BOTTOM_MARGIN_CONTAINER = 150
+    EARLY_BOTTOM_MIN_SCROLLS = 15   # exigir más scrolls antes de aceptar bottom si total aún bajo
+    EARLY_BOTTOM_MIN_TOTAL = 300    # si total < este umbral, pedir doble confirmación
+    BOTTOM_MARGIN_CONTAINER = 220
     BOTTOM_MARGIN_WINDOW = 200
 
     async def bottom_check() -> bool:
@@ -165,15 +174,15 @@ async def extraer_usuarios_instagram(page, tipo_lista="seguidores", usuario_prin
     stats = await scroll_loop(
         process_once=process_once,
         do_scroll=do_scroll,
-        max_scrolls=40,
-        pause_ms=900,
-        stagnation_limit=6,
+        max_scrolls=300,
+        pause_ms=800,
+        stagnation_limit=8,
         empty_limit=2,
         bottom_check=bottom_check,
         adaptive=True,
-        adaptive_decay_threshold=0.30,
+        adaptive_decay_threshold=0.25,
         log_prefix=f"instagram.list type={tipo_lista}",
-        timeout_ms=35000,
+        timeout_ms=120000,
     )
 
     await blocker.stop()

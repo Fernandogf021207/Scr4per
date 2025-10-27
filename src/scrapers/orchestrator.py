@@ -328,15 +328,29 @@ class ScrapeOrchestrator:
             with get_conn() as conn:
                 with conn.cursor() as cur:
                     upsert_profile(cur, platform, root_username, root_profile.get('full_name'), root_profile.get('profile_url'), root_profile.get('photo_url'))
-                    for rel_item in (followers + following + friends + commenters + reactors):
+                    # Followers: root -> fu (follower) [align with legacy scrape]
+                    for rel_item in followers or []:
                         norm = self._normalize_user_item(platform, rel_item)
                         fu = norm.get('username')
-                        if fu and _valid(fu):
+                        if fu and _valid(fu) and fu != root_username:
                             upsert_profile(cur, platform, fu, norm.get('full_name'), norm.get('profile_url'), norm.get('photo_url'))
-                            # Relationship direction mapping replicates ingestion logic
-                            rel_type_db = rel_item.get('_rel_type_db')
-                            if rel_type_db and rel_item.get('_rel_source_db') and rel_item.get('_rel_target_db'):
-                                add_relationship(cur, platform, rel_item.get('_rel_source_db'), rel_item.get('_rel_target_db'), rel_type_db)
+                            add_relationship(cur, platform, root_username, fu, 'follower')
+                    # Following: root -> fu (following)
+                    for rel_item in following or []:
+                        norm = self._normalize_user_item(platform, rel_item)
+                        fu = norm.get('username')
+                        if fu and _valid(fu) and fu != root_username:
+                            upsert_profile(cur, platform, fu, norm.get('full_name'), norm.get('profile_url'), norm.get('photo_url'))
+                            add_relationship(cur, platform, root_username, fu, 'following')
+                    # Friends (Facebook): single direction root -> fu (friend) [align with legacy]
+                    if platform == 'facebook':
+                        for rel_item in friends or []:
+                            norm = self._normalize_user_item(platform, rel_item)
+                            fu = norm.get('username')
+                            if fu and _valid(fu) and fu != root_username:
+                                upsert_profile(cur, platform, fu, norm.get('full_name'), norm.get('profile_url'), norm.get('photo_url'))
+                                add_relationship(cur, platform, root_username, fu, 'friend')
+                    # Commenters/Reactors: omit persistence in relationships table (they belong to comments/reactions tables)
                 conn.commit()
         except Exception:  # noqa: BLE001
             logger.exception("orchestrator.persist_error platform=%s root=%s", platform, root_username)
