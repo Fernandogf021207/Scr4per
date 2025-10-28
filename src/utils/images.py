@@ -159,7 +159,7 @@ async def local_or_proxy_photo_url(
 ) -> str:
     """
     Devuelve una URL utilizable por el frontend para mostrar la imagen de perfil.
-    - mode="download": descarga y devuelve "/storage/images/<file>"
+    - mode="download": descarga y devuelve "/data/storage/images/<file>" (o "/storage/images/<file>" por compat)
     - mode="proxy": usa el endpoint /proxy-image para evitar CORS sin guardar
     - mode="external": devuelve la URL original (si el frontend puede cargarla)
     """
@@ -173,15 +173,15 @@ async def local_or_proxy_photo_url(
     if mode == "external":
         return photo_url
     # default -> download with retries
-    # If already a local storage path, return as-is (accept both /storage/ and /../data/storage/ variants)
+    # If already a local storage path, return as-is
     photo_str = str(photo_url)
-    if photo_str.startswith('/storage/') or photo_str.startswith('/../data/storage/'):
+    if photo_str.startswith('/data/storage/') or photo_str.startswith('/storage/'):
         return photo_url
 
     attempts = max(1, int(retries))
     for i in range(attempts):
         result = await download_profile_image(photo_url, username, page=page, on_failure='proxy')
-        if result and (result.startswith('/storage/') or result.startswith(PUBLIC_IMAGES_PREFIX_PRIMARY) or result.startswith('/../data/storage/')):
+        if result and (result.startswith('/data/storage/') or result.startswith('/storage/') or result.startswith(PUBLIC_IMAGES_PREFIX_PRIMARY)):
             return result
         if i < attempts - 1:
             try:

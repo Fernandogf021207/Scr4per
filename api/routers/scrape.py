@@ -120,7 +120,7 @@ async def scrape(req: ScrapeRequest):
             with get_conn() as conn:
                 with conn.cursor() as cur:
                     try:
-                        if perfil_obj.get('photo_url') and not str(perfil_obj['photo_url']).startswith('/storage/'):
+                        if perfil_obj.get('photo_url') and not (str(perfil_obj['photo_url']).startswith('/storage/') or str(perfil_obj['photo_url']).startswith('/data/storage/')):
                             perfil_obj['photo_url'] = await local_or_proxy_photo_url(
                                 perfil_obj.get('photo_url'),
                                 perfil_obj.get('username'),
@@ -154,7 +154,7 @@ async def scrape(req: ScrapeRequest):
                     async def _ensure_local_photo(url: Optional[str], uname: str) -> str:
                         if not url:
                             return ""
-                        if str(url).startswith('/storage/'):
+                        if str(url).startswith('/storage/') or str(url).startswith('/data/storage/'):
                             return url
                         try:
                             return await local_or_proxy_photo_url(
@@ -259,7 +259,7 @@ async def scrape(req: ScrapeRequest):
                         on_failure='empty',
                         retries=5,
                         backoff_seconds=0.5,
-                    ) if (perfil_obj.get("photo_url") and not str(perfil_obj.get("photo_url")).startswith('/storage/')) else perfil_obj.get("photo_url")
+                    ) if (perfil_obj.get("photo_url") and not (str(perfil_obj.get("photo_url")).startswith('/storage/') or str(perfil_obj.get("photo_url")).startswith('/data/storage/'))) else perfil_obj.get("photo_url")
                 ),
             }
             relacionados_out = [
@@ -274,7 +274,7 @@ async def scrape(req: ScrapeRequest):
                             on_failure='empty',
                             retries=5,
                             backoff_seconds=0.5,
-                        ) if (item.get("photo_url") and item.get("username") and not str(item.get("photo_url")).startswith('/storage/')) else item.get("photo_url")
+                        ) if (item.get("photo_url") and item.get("username") and not (str(item.get("photo_url")).startswith('/storage/') or str(item.get("photo_url")).startswith('/data/storage/'))) else item.get("photo_url")
                     ),
                 }
                 for item in relacionados

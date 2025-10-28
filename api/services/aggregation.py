@@ -133,7 +133,6 @@ def _profile_to_dict(acc: ProfileAccum) -> Dict[str, Any]:
         "full_name": acc.full_name,
         "profile_url": acc.profile_url,
         "photo_url": acc.photo_url,
-        # Sources as string identifiers platform:username (deterministic order)
         "sources": [f"{p}:{u}" for (p, u) in sorted(acc.sources)],
     }
 

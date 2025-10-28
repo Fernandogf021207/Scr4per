@@ -97,6 +97,8 @@ _storage_candidates = [
 ]
 for _cand in _storage_candidates:
     if os.path.isdir(_cand):
+        # Mount both canonical and compat prefixes to the same directory
+        app.mount("/data/storage", StaticFiles(directory=_cand), name="data_storage")
         app.mount("/storage", StaticFiles(directory=_cand), name="storage")
         break
 

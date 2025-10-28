@@ -19,6 +19,22 @@ logger = logging.getLogger(__name__)
 
 ProfileKey = Tuple[str, str]  # (platform, username)
 
+def _normalize_public_photo_url(url: Optional[str]) -> Optional[str]:
+    """Normalize any legacy public photo URL to the canonical '/data/storage/images' prefix.
+
+    - '/../data/storage/...' -> '/data/storage/...'
+    - '/storage/images/...'   -> '/data/storage/images/...'
+    - other values returned as-is
+    """
+    if not url:
+        return url
+    s = str(url)
+    if s.startswith('/../data/storage/'):
+        return s.replace('/../data/storage', '/data/storage', 1)
+    if s.startswith('/storage/images/'):
+        return s.replace('/storage/images', '/data/storage/images', 1)
+    return s
+
 
 class GraphExtractor:
     """Extracts a subgraph from the database using BFS expansion."""
@@ -260,7 +276,7 @@ class GraphExtractor:
                                 self.profile_map[key].update({
                                     'full_name': row.get('full_name'),
                                     'profile_url': row.get('profile_url'),
-                                    'photo_url': row.get('photo_url'),
+                                    'photo_url': _normalize_public_photo_url(row.get('photo_url')),
                                     'updated_at': str(row['updated_at']) if row.get('updated_at') else None,
                                 })
                     except Exception as e:
