@@ -40,9 +40,10 @@ COPY logs/ ./logs
 COPY data/ ./data
 COPY src/ ./src
 COPY db/ ./db
+COPY paths.py ./paths.py
 
 #Exponer el puerto de la aplicación
 EXPOSE 8000
 
 #Comando para ejecutar la aplicación
-CMD ["uvicorn", "api.app:app", "--host", "0.0.0.0","--port", "8000","--reload"]
+CMD ["uvicorn", "api.main:app", "--host", "0.0.0.0","--port", "8000"]

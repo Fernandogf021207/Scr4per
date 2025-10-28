@@ -11,3 +11,5 @@ python-dotenv>=1.0.1
 pydantic>=1.10.0
 sqlalchemy
 pytest>=8.2.0
+httpx
+python-multipart
