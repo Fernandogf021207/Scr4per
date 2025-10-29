@@ -2,7 +2,9 @@ version: "3.9"
 
 services:
   scr4per_api:
+    image: osint:1.0
     build: .
+    restart: unless-stopped
     container_name: OSINT-API
     ports:
       - "8000:8000"
