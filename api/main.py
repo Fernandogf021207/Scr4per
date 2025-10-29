@@ -69,6 +69,15 @@ def create_app() -> FastAPI:
     from .routers.files import router as files_router
     from .routers.multi_scrape import router as multi_scrape_router
     from .routers.multi_related import router as multi_related_router
+    # Settings and sessions management
+    try:
+        from .routers.config import router as config_router  # type: ignore
+    except Exception:
+        config_router = None
+    try:
+        from .routers.sessions import router as sessions_router  # type: ignore
+    except Exception:
+        sessions_router = None
 
     app.include_router(health_router)
     app.include_router(proxy_router)
@@ -84,6 +93,10 @@ def create_app() -> FastAPI:
     app.include_router(files_router, prefix="/files")
     app.include_router(multi_scrape_router)
     app.include_router(multi_related_router)
+    if config_router:
+        app.include_router(config_router)
+    if sessions_router:
+        app.include_router(sessions_router)
 
     return app
 

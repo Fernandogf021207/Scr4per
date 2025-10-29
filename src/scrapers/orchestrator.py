@@ -186,15 +186,24 @@ class ScrapeOrchestrator:
                 except Exception:
                     root_profile['photo_url'] = ''
             
-            # Facebook-specific: recreate context for each list to avoid crashes
+            # Recreate fresh contexts for fragile platforms to avoid residual modals/DOM and crashes
             if platform == 'facebook':
                 followers = await self._fb_list_with_fresh_context(browser, storage_state, scraper_cls, username, 'followers')
                 following = await self._fb_list_with_fresh_context(browser, storage_state, scraper_cls, username, 'following')
                 friends = await self._fb_list_with_fresh_context(browser, storage_state, scraper_cls, username, 'friends')
-                # Enable photos scraping for Facebook if max_photos > 0
                 if req.max_photos > 0:
                     commenters = await self._fb_list_with_fresh_context(browser, storage_state, scraper_cls, username, 'commenters', req.max_photos)
                     reactors = await self._fb_list_with_fresh_context(browser, storage_state, scraper_cls, username, 'reactors', req.max_photos)
+                else:
+                    commenters = []
+                    reactors = []
+            elif platform == 'instagram':
+                followers = await self._ig_list_with_fresh_context(browser, storage_state, scraper_cls, username, 'followers')
+                following = await self._ig_list_with_fresh_context(browser, storage_state, scraper_cls, username, 'following')
+                friends = []
+                if req.max_photos > 0:
+                    commenters = await self._ig_list_with_fresh_context(browser, storage_state, scraper_cls, username, 'commenters', req.max_photos)
+                    reactors = await self._ig_list_with_fresh_context(browser, storage_state, scraper_cls, username, 'reactors', req.max_photos)
                 else:
                     commenters = []
                     reactors = []
@@ -228,6 +237,45 @@ class ScrapeOrchestrator:
             logger.exception("orchestrator.scrape_error platform=%s username=%s", platform, username)
         finally:
             await context.close()
+
+    async def _ig_list_with_fresh_context(self, browser, storage_state, scraper_cls, username: str, list_type: str, max_items: int = 0):
+        """Execute a single Instagram phase with a fresh context to prevent stuck clicks/crashes.
+        Mirrors the strategy used for Facebook.
+        """
+        logger.info(f"orchestrator.ig_fresh_context list={list_type} username={username}")
+        ctx = None
+        try:
+            ctx = await browser.new_context(
+                storage_state=storage_state,
+                viewport={'width': 1280, 'height': 720},
+                user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+                locale='en-US',
+            )
+            await ctx.add_init_script("""
+                Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
+                window.chrome = {runtime: {}};
+            """)
+            pg = await ctx.new_page()
+            scraper = scraper_cls(pg, 'instagram')
+
+            if list_type == 'followers':
+                return await scraper.get_followers(username)
+            if list_type == 'following':
+                return await scraper.get_following(username)
+            if list_type == 'commenters':
+                return await scraper.get_commenters(username, max_items)
+            if list_type == 'reactors':
+                return await scraper.get_reactors(username, max_items)
+            return []
+        except Exception as e:
+            logger.error(f"orchestrator.ig_fresh_context_error list={list_type} username={username} error={e}")
+            return []
+        finally:
+            if ctx:
+                try:
+                    await ctx.close()
+                except Exception:
+                    pass
 
     async def _fb_list_with_fresh_context(self, browser, storage_state, scraper_cls, username: str, list_type: str, max_items: int = 0) -> List[dict]:
         """Execute a single Facebook list extraction with a fresh context to prevent crashes."""
