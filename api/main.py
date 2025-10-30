@@ -29,7 +29,8 @@ def create_app() -> FastAPI:
 
     # CORS
     _default_frontend_origins = [
-        "https://naatintelligence.com"
+        "https://naatintelligence.com",
+        "http://naatintelligence.com:5173"
     ]
     _extra_origins = [o.strip() for o in (os.getenv("FRONTEND_ORIGINS") or "").split(",") if o.strip()]
     _allowed_origins = list({*(_default_frontend_origins + _extra_origins)})
