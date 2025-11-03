@@ -1,6 +1,7 @@
 import asyncio
 import logging
-from typing import Dict, List
+from typing import Dict, List, Optional
+import urllib.parse
 
 from src.scrapers.facebook.config import FACEBOOK_CONFIG
 from src.scrapers.facebook.utils import normalize_profile_url, get_text, get_attr, absolute_url_keep_query
@@ -432,6 +433,84 @@ async def extraer_urls_fotos(page, max_fotos: int = 5) -> List[str]:
 	return urls[:max_fotos]
 
 
+async def _open_photo_in_modal_or_goto(page, photo_url: str) -> bool:
+	"""Intenta abrir la foto en un modal desde el grid; si falla, navega a la URL.
+	Devuelve True si se considera abierta/cargada.
+	"""
+	try:
+		parsed = urllib.parse.urlparse(photo_url)
+		q = urllib.parse.parse_qs(parsed.query)
+		fbid = (q.get('fbid') or [''])[0]
+		selector = None
+		if fbid:
+			selector = f'a[href*="fbid={fbid}"]'
+		else:
+			path = (parsed.path or '').strip('/')
+			if path:
+				selector = f'a[href*="/{path}"]'
+		if selector:
+			a = await page.query_selector(selector)
+			if a:
+				await a.click()
+				try:
+					await page.wait_for_selector('div[role="dialog"]', timeout=4000)
+					return True
+				except Exception:
+					pass
+		await page.goto(photo_url)
+		await page.wait_for_timeout(1000)
+		return True
+	except Exception:
+		return False
+
+
+async def _close_photo_modal_if_open(page):
+	try:
+		dialog = await page.query_selector('div[role="dialog"]')
+		if not dialog:
+			return
+		# Intentar botón de cierre
+		for sel in [
+			'div[role="dialog"] [aria-label*="Cerrar"]',
+			'div[role="dialog"] [aria-label*="Close"]',
+			'div[role="dialog"] [role="button"]:has-text("Cerrar")',
+			'div[role="dialog"] [role="button"]:has-text("Close")',
+		]:
+			try:
+				btn = await page.query_selector(sel)
+				if btn:
+					await btn.click()
+					await page.wait_for_timeout(300)
+					break
+			except Exception:
+				continue
+		# Fallback Escape
+		try:
+			await page.keyboard.press('Escape')
+		except Exception:
+			pass
+	except Exception:
+		return
+
+
+async def _open_photo_in_new_tab(page, photo_url: str):
+	"""Abre la foto en una nueva pestaña dentro del mismo contexto para aislar carga.
+	Devuelve la nueva page o None si falla.
+	"""
+	try:
+		newp = await page.context.new_page()
+		await newp.goto(photo_url)
+		# Pequeña espera para que cargue el DOM
+		await newp.wait_for_timeout(1000)
+		return newp
+	except Exception:
+		try:
+			await newp.close()  # type: ignore[name-defined]
+		except Exception:
+			pass
+		return None
+
+
 async def procesar_usuarios_en_modal_reacciones(page, reacciones_dict: Dict[str, dict], photo_url: str):
 	"""Procesa el modal de reacciones (usuarios que reaccionaron)."""
 	try:
@@ -571,16 +650,25 @@ async def scrap_reacciones_fotos(page, perfil_url: str, username: str, max_fotos
 
 	for i, photo_url in enumerate(urls, 1):
 		try:
-			await page.goto(photo_url)
-			await page.wait_for_timeout(2500)
-			# Abrir reacciones de la foto
-			await abrir_y_scrapear_modal_reacciones(page, reacciones, photo_url)
+			# Abrir foto en nueva pestaña para aislar carga (más estable)
+			photo_page = await _open_photo_in_new_tab(page, photo_url)
+			target_page = photo_page or page
+			await target_page.wait_for_timeout(2500)
+			# Abrir reacciones de la foto en la pestaña de la foto
+			await abrir_y_scrapear_modal_reacciones(target_page, reacciones, photo_url)
 			# Opcional: reacciones en comentarios
 			if incluir_comentarios:
-				await abrir_y_scrapear_reacciones_en_comentarios(page, reacciones, photo_url)
+				await abrir_y_scrapear_reacciones_en_comentarios(target_page, reacciones, photo_url)
 			# Pausas para rate limiting
 			if i % 3 == 0:
 				await asyncio.sleep(2)
+			# Cerrar modal/pestaña
+			await _close_photo_modal_if_open(target_page)
+			if photo_page:
+				try:
+					await photo_page.close()
+				except Exception:
+					pass
 		except Exception:
 			continue
 	return list(reacciones.values())
@@ -683,8 +771,9 @@ async def scrap_comentarios_fotos(page, perfil_url: str, username: str, max_foto
 	comentarios: Dict[str, dict] = {}
 	for i, photo_url in enumerate(urls, 1):
 		try:
-			await page.goto(photo_url)
-			await page.wait_for_timeout(2000)
+			photo_page = await _open_photo_in_new_tab(page, photo_url)
+			target_page = photo_page or page
+			await target_page.wait_for_timeout(2000)
 			# Scroll del modal/página para cargar comentarios
 			for s in range(15):
 				try:
@@ -743,11 +832,17 @@ async def scrap_comentarios_fotos(page, perfil_url: str, username: str, max_foto
 					""")
 				except Exception:
 					pass
-				await page.wait_for_timeout(800)
-				await procesar_comentarios_en_modal_foto(page, comentarios, photo_url)
+				await target_page.wait_for_timeout(800)
+				await procesar_comentarios_en_modal_foto(target_page, comentarios, photo_url)
 			# Pequeña pausa cada 3 fotos
 			if i % 3 == 0:
 				await asyncio.sleep(2)
+			await _close_photo_modal_if_open(target_page)
+			if photo_page:
+				try:
+					await photo_page.close()
+				except Exception:
+					pass
 		except Exception:
 			continue
 	return list(comentarios.values())

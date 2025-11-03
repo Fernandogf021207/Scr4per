@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import logging
 from typing import Any, Dict, List, Optional
 
 from playwright.async_api import Browser, async_playwright
@@ -9,6 +10,7 @@ from ..deps import storage_state_for
 from src.utils.url import normalize_input_url
 from src.utils.images import local_or_proxy_photo_url
 
+logger = logging.getLogger(__name__)
 
 async def launch_browser(headless: bool = True) -> Browser:
     pw = await async_playwright().start()
@@ -63,6 +65,8 @@ CONTEXT_OPTS = {
     "timezone_id": "America/Mexico_City",
     "color_scheme": "light",
     "device_scale_factor": 1.25,
+    "reduced_motion": "reduce",
+    "viewport": {"width": 1280, "height": 900},
 }
 
 
@@ -77,6 +81,10 @@ class InstagramAdapter:
         storage = storage_state_for(self.platform, self.tenant)
         context = await self.browser.new_context(storage_state=storage if storage else None, **CONTEXT_OPTS)
         page = await context.new_page()
+        try:
+            logger.info("ctx.open platform=%s tenant=%s ctx=%s", self.platform, self.tenant, id(context))
+        except Exception:
+            pass
         return context, page
 
     async def get_root_profile(self, username: str) -> Dict[str, Any]:
@@ -104,6 +112,7 @@ class InstagramAdapter:
         from src.scrapers.instagram.scraper import scrap_seguidores
         context, page = await self._new_page()
         try:
+            logger.info("list.start platform=%s type=followers username=%s ctx=%s", self.platform, username, id(context))
             perfil_url = _profile_url(self.platform, username)
             rows = await scrap_seguidores(page, perfil_url, username)
             out: List[Dict[str, Any]] = []
@@ -120,6 +129,7 @@ class InstagramAdapter:
         from src.scrapers.instagram.scraper import scrap_seguidos
         context, page = await self._new_page()
         try:
+            logger.info("list.start platform=%s type=following username=%s ctx=%s", self.platform, username, id(context))
             perfil_url = _profile_url(self.platform, username)
             rows = await scrap_seguidos(page, perfil_url, username)
             out: List[Dict[str, Any]] = []
@@ -147,6 +157,10 @@ class FacebookAdapter:
         storage = storage_state_for(self.platform, self.tenant)
         context = await self.browser.new_context(storage_state=storage if storage else None, **CONTEXT_OPTS)
         page = await context.new_page()
+        try:
+            logger.info("ctx.open platform=%s tenant=%s ctx=%s", self.platform, self.tenant, id(context))
+        except Exception:
+            pass
         return context, page
 
     async def get_root_profile(self, username: str) -> Dict[str, Any]:
@@ -172,6 +186,7 @@ class FacebookAdapter:
         from src.scrapers.facebook.scraper import navegar_a_lista, extraer_usuarios_listado
         context, page = await self._new_page()
         try:
+            logger.info("list.start platform=%s type=%s username=%s ctx=%s", self.platform, lista, username, id(context))
             perfil_url = _profile_url(self.platform, username)
             ok = await navegar_a_lista(page, perfil_url, lista)
             if not ok:
@@ -196,6 +211,46 @@ class FacebookAdapter:
     async def get_friends(self, username: str) -> List[Dict[str, Any]]:
         return await self._list(username, 'friends_all')
 
+    async def get_photo_reactors(self, username: str, max_photos: int = 5, include_comment_reactions: bool = False) -> List[Dict[str, Any]]:
+        """Devuelve perfiles que reaccionaron a las últimas fotos públicas del usuario.
+        Nota: La relación en orquestador será 'reacted'.
+        """
+        from src.scrapers.facebook.scraper import scrap_reacciones_fotos
+        context, page = await self._new_page()
+        try:
+            logger.info("list.start platform=%s type=photo_reactors username=%s ctx=%s", self.platform, username, id(context))
+            perfil_url = _profile_url(self.platform, username)
+            rows = await scrap_reacciones_fotos(page, perfil_url, username, max_fotos=max_photos, incluir_comentarios=include_comment_reactions)
+            out: List[Dict[str, Any]] = []
+            for r in rows:
+                item = _map_user_item_to_profile(self.platform, r)
+                if item.get('photo_url'):
+                    item['photo_url'] = await local_or_proxy_photo_url(item['photo_url'], item['username'], mode='download', page=page)
+                out.append(item)
+            return out
+        finally:
+            await context.close()
+
+    async def get_photo_commenters(self, username: str, max_photos: int = 5) -> List[Dict[str, Any]]:
+        """Devuelve perfiles que comentaron en las últimas fotos públicas del usuario.
+        Nota: La relación en orquestador será 'commented'.
+        """
+        from src.scrapers.facebook.scraper import scrap_comentarios_fotos
+        context, page = await self._new_page()
+        try:
+            logger.info("list.start platform=%s type=photo_commenters username=%s ctx=%s", self.platform, username, id(context))
+            perfil_url = _profile_url(self.platform, username)
+            rows = await scrap_comentarios_fotos(page, perfil_url, username, max_fotos=max_photos)
+            out: List[Dict[str, Any]] = []
+            for r in rows:
+                item = _map_user_item_to_profile(self.platform, r)
+                if item.get('photo_url'):
+                    item['photo_url'] = await local_or_proxy_photo_url(item['photo_url'], item['username'], mode='download', page=page)
+                out.append(item)
+            return out
+        finally:
+            await context.close()
+
 
 class XAdapter:
     platform = 'x'
@@ -208,6 +263,10 @@ class XAdapter:
         storage = storage_state_for(self.platform, self.tenant)
         context = await self.browser.new_context(storage_state=storage if storage else None, **CONTEXT_OPTS)
         page = await context.new_page()
+        try:
+            logger.info("ctx.open platform=%s tenant=%s ctx=%s", self.platform, self.tenant, id(context))
+        except Exception:
+            pass
         return context, page
 
     async def get_root_profile(self, username: str) -> Dict[str, Any]:
@@ -236,6 +295,7 @@ class XAdapter:
         from src.scrapers.x.scraper import extraer_usuarios_lista
         context, page = await self._new_page()
         try:
+            logger.info("list.start platform=%s type=%s username=%s ctx=%s", self.platform, list_suffix, username, id(context))
             perfil_url = _profile_url(self.platform, username)
             list_url = normalize_input_url('x', f"{perfil_url.rstrip('/')}/{list_suffix}")
             await page.goto(list_url)

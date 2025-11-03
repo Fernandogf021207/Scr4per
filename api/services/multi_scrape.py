@@ -114,6 +114,29 @@ async def _process_root(root: Dict[str, Any], browser) -> Dict[str, Any]:
                 if tu:
                     add_relation(tu, 'friend')
 
+        # Facebook: recolectar perfiles por reacciones y comentarios en fotos públicas
+        if platform == 'facebook':
+            try:
+                reactors = await adapter.get_photo_reactors(username, int(root.get("max_photos") or 5), include_comment_reactions=False)
+            except Exception as e:
+                reactors = []
+                warnings.append({"code": "FB_REACTORS_FAIL", "message": f"{rid} {e}"})
+            try:
+                commenters = await adapter.get_photo_commenters(username, int(root.get("max_photos") or 5))
+            except Exception as e:
+                commenters = []
+                warnings.append({"code": "FB_COMMENTERS_FAIL", "message": f"{rid} {e}"})
+
+            for it in reactors:
+                tu = add_profile(it)
+                if tu:
+                    add_relation(tu, 'reacted')
+
+            for it in commenters:
+                tu = add_profile(it)
+                if tu:
+                    add_relation(tu, 'commented')
+
         # Persist per root (transaction)
         if persist and profiles_map:
             try:

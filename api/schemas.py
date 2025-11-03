@@ -143,7 +143,7 @@ class MultiScrapeRelationItem(BaseModel):
     platform: Literal['x', 'instagram', 'facebook']
     source: str
     target: str
-    type: Literal['follower', 'following', 'friend']
+    type: Literal['follower', 'following', 'friend', 'commented', 'reacted']
 
     @validator('source', 'target')
     def _username_valid(cls, v: str):
