@@ -114,11 +114,19 @@ async def extraer_usuarios_instagram(page, tipo_lista="seguidores", usuario_prin
             current_user_count = len(usuarios_dict)
 
             if container:
-                await scroll_element(container, 800)
+                await scroll_element(container, 1000)
             else:
-                await scroll_window(page, 600)
+                await scroll_window(page, 800)
 
-            await page.wait_for_timeout(1200)
+            # Espera adaptativa más corta para cargar nuevos items
+            try:
+                if container:
+                    # Pequeña espera para dar tiempo a renderizar
+                    await page.wait_for_timeout(400)
+                else:
+                    await page.wait_for_timeout(400)
+            except Exception:
+                pass
 
             # Procesar usuarios después del scroll
             await procesar_usuarios_en_modal(page, usuarios_dict, usuario_principal, tipo_lista)
@@ -135,8 +143,8 @@ async def extraer_usuarios_instagram(page, tipo_lista="seguidores", usuario_prin
 
             # Pausa cada 12 scrolls para evitar rate limiting
             if scroll_attempts % 12 == 0:
-                logger.info("Pausa para evitar rate limiting... (%d usuarios hasta ahora)", len(usuarios_dict))
-                await page.wait_for_timeout(2500)
+                logger.info("Pausa breve para evitar rate limiting... (%d usuarios hasta ahora)", len(usuarios_dict))
+                await page.wait_for_timeout(1500)
 
             # Verificar si llegamos al final del contenedor
             is_at_bottom = False
@@ -178,67 +186,57 @@ async def procesar_usuarios_en_modal(page, usuarios_dict, usuario_principal, tip
             'div[role="dialog"] a[role="link"]'
         ]
         
-        elementos_usuarios = []
+        data = None
         for selector in selectores_contenedor:
             try:
-                elementos = await page.query_selector_all(selector)
-                if elementos:
-                    # Filtrar elementos que realmente contienen información de usuario
-                    elementos_validos = []
-                    for elemento in elementos:
-                        try:
-                            # Verificar que tiene enlace de perfil
-                            enlace = await elemento.query_selector('a[role="link"]') or elemento
-                            if enlace:
-                                href = await enlace.get_attribute("href")
-                                if href and href.startswith('/') and len(href.split('/')) >= 2:
-                                    elementos_validos.append(elemento)
-                        except:
-                            continue
-                    
-                    if elementos_validos:
-                        elementos_usuarios = elementos_validos
-                        logger.info("Encontrados %d elementos con selector: %s", len(elementos_usuarios), selector)
-                        break
-            except:
+                # Extraer en una sola evaluación para reducir round-trips
+                js = '''
+                (sel) => {
+                  const nodes = Array.from(document.querySelectorAll(sel));
+                  const out = [];
+                  for (const el of nodes) {
+                    let a = el.querySelector("a[role='link']") || el.querySelector("a[href^='/']");
+                    if (!a) continue;
+                    const href = a.getAttribute("href") || "";
+                    if (!href.startsWith("/")) continue;
+                    const img = el.querySelector("img");
+                    const src = img ? (img.currentSrc || img.src || "") : "";
+                    const text = (el.textContent || "").trim();
+                    const name = text.split("\\n")[0] || null;
+                    out.push({ href, name, src });
+                  }
+                  return out;
+                }
+                '''
+                data = await page.evaluate(js, selector)
+                if data and len(data) > 0:
+                    logger.info("Encontrados %d elementos con selector: %s", len(data), selector)
+                    break
+            except Exception:
+                data = None
                 continue
-        
-        if not elementos_usuarios:
+
+        if not data:
             logger.info("No se encontraron usuarios en este scroll")
             return
 
-        # Procesar cada elemento de usuario
-        for elemento in elementos_usuarios:
+        for rec in data:
             try:
-                enlace = await elemento.query_selector('a[role="link"]') or elemento
-                if not enlace:
-                    continue
-
-                href = await enlace.get_attribute("href")
+                href = rec.get('href') or ''
                 if not href or not href.startswith('/'):
                     continue
-
-                # Construir URL absoluta y normalizada con builder
                 url_usuario_abs = f"https://www.instagram.com{href}"
-                texto_elemento = await elemento.inner_text()
-                lineas = texto_elemento.strip().split('\n')
-                nombre_completo_usuario = lineas[0] if lineas and lineas[0] else None
-                img_element = await elemento.query_selector('img')
-                url_foto = await img_element.get_attribute("src") if img_element else ""
+                nombre_completo_usuario = rec.get('name')
+                url_foto = rec.get('src') or ""
                 item = build_user_item('instagram', url_usuario_abs, nombre_completo_usuario, url_foto)
                 url_limpia = item['link_usuario']
                 username_usuario = item['username_usuario']
 
-                # Evitar procesar el usuario principal
                 if username_usuario == usuario_principal:
                     continue
-
-                # Evitar duplicados
                 if url_limpia in usuarios_dict:
                     continue
-
                 usuarios_dict[url_limpia] = item
-
             except Exception as e:
                 logger.warning(f"Error procesando usuario individual: {e}")
                 continue

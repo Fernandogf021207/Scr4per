@@ -7,6 +7,7 @@ from playwright.async_api import Browser, async_playwright
 
 from ..deps import storage_state_for
 from src.utils.url import normalize_input_url
+from src.utils.images import local_or_proxy_photo_url
 
 
 async def launch_browser(headless: bool = True) -> Browser:
@@ -56,15 +57,25 @@ def _map_user_item_to_profile(platform: str, item: Dict[str, Any]) -> Dict[str, 
     }
 
 
+CONTEXT_OPTS = {
+    "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36",
+    "locale": "es-ES",
+    "timezone_id": "America/Mexico_City",
+    "color_scheme": "light",
+    "device_scale_factor": 1.25,
+}
+
+
 class InstagramAdapter:
     platform = 'instagram'
 
-    def __init__(self, browser: Browser):
+    def __init__(self, browser: Browser, tenant: Optional[str] = None):
         self.browser = browser
+        self.tenant = tenant
 
     async def _new_page(self):
-        storage = storage_state_for(self.platform)
-        context = await self.browser.new_context(storage_state=storage if storage else None)
+        storage = storage_state_for(self.platform, self.tenant)
+        context = await self.browser.new_context(storage_state=storage if storage else None, **CONTEXT_OPTS)
         page = await context.new_page()
         return context, page
 
@@ -74,13 +85,18 @@ class InstagramAdapter:
         try:
             perfil_url = _profile_url(self.platform, username)
             data = await obtener_datos_usuario_principal(page, perfil_url)
-            return {
+            # Build base profile
+            prof = {
                 'platform': self.platform,
                 'username': data.get('username') or username,
                 'full_name': data.get('nombre_completo') or None,
                 'profile_url': data.get('url_usuario') or perfil_url,
                 'photo_url': data.get('foto_perfil') or None,
             }
+            # Ensure local image path
+            if prof.get('photo_url'):
+                prof['photo_url'] = await local_or_proxy_photo_url(prof['photo_url'], prof['username'], mode='download', page=page)
+            return prof
         finally:
             await context.close()
 
@@ -90,7 +106,13 @@ class InstagramAdapter:
         try:
             perfil_url = _profile_url(self.platform, username)
             rows = await scrap_seguidores(page, perfil_url, username)
-            return [_map_user_item_to_profile(self.platform, r) for r in rows]
+            out: List[Dict[str, Any]] = []
+            for r in rows:
+                item = _map_user_item_to_profile(self.platform, r)
+                if item.get('photo_url'):
+                    item['photo_url'] = await local_or_proxy_photo_url(item['photo_url'], item['username'], mode='download', page=page)
+                out.append(item)
+            return out
         finally:
             await context.close()
 
@@ -100,7 +122,13 @@ class InstagramAdapter:
         try:
             perfil_url = _profile_url(self.platform, username)
             rows = await scrap_seguidos(page, perfil_url, username)
-            return [_map_user_item_to_profile(self.platform, r) for r in rows]
+            out: List[Dict[str, Any]] = []
+            for r in rows:
+                item = _map_user_item_to_profile(self.platform, r)
+                if item.get('photo_url'):
+                    item['photo_url'] = await local_or_proxy_photo_url(item['photo_url'], item['username'], mode='download', page=page)
+                out.append(item)
+            return out
         finally:
             await context.close()
 
@@ -111,12 +139,13 @@ class InstagramAdapter:
 class FacebookAdapter:
     platform = 'facebook'
 
-    def __init__(self, browser: Browser):
+    def __init__(self, browser: Browser, tenant: Optional[str] = None):
         self.browser = browser
+        self.tenant = tenant
 
     async def _new_page(self):
-        storage = storage_state_for(self.platform)
-        context = await self.browser.new_context(storage_state=storage if storage else None)
+        storage = storage_state_for(self.platform, self.tenant)
+        context = await self.browser.new_context(storage_state=storage if storage else None, **CONTEXT_OPTS)
         page = await context.new_page()
         return context, page
 
@@ -126,13 +155,16 @@ class FacebookAdapter:
         try:
             perfil_url = _profile_url(self.platform, username)
             data = await obtener_datos_usuario_facebook(page, perfil_url)
-            return {
+            prof = {
                 'platform': self.platform,
                 'username': data.get('username') or username,
                 'full_name': data.get('nombre_completo') or None,
                 'profile_url': data.get('url_usuario') or perfil_url,
                 'photo_url': data.get('foto_perfil') or None,
             }
+            if prof.get('photo_url'):
+                prof['photo_url'] = await local_or_proxy_photo_url(prof['photo_url'], prof['username'], mode='download', page=page)
+            return prof
         finally:
             await context.close()
 
@@ -145,7 +177,13 @@ class FacebookAdapter:
             if not ok:
                 return []
             rows = await extraer_usuarios_listado(page, lista, username)
-            return [_map_user_item_to_profile(self.platform, r) for r in rows]
+            out: List[Dict[str, Any]] = []
+            for r in rows:
+                item = _map_user_item_to_profile(self.platform, r)
+                if item.get('photo_url'):
+                    item['photo_url'] = await local_or_proxy_photo_url(item['photo_url'], item['username'], mode='download', page=page)
+                out.append(item)
+            return out
         finally:
             await context.close()
 
@@ -162,12 +200,13 @@ class FacebookAdapter:
 class XAdapter:
     platform = 'x'
 
-    def __init__(self, browser: Browser):
+    def __init__(self, browser: Browser, tenant: Optional[str] = None):
         self.browser = browser
+        self.tenant = tenant
 
     async def _new_page(self):
-        storage = storage_state_for(self.platform)
-        context = await self.browser.new_context(storage_state=storage if storage else None)
+        storage = storage_state_for(self.platform, self.tenant)
+        context = await self.browser.new_context(storage_state=storage if storage else None, **CONTEXT_OPTS)
         page = await context.new_page()
         return context, page
 
@@ -180,13 +219,16 @@ class XAdapter:
             await page.wait_for_timeout(3000)
             data = await obtener_nombre_usuario_x(page)
             foto = await obtener_foto_perfil_x(page)
-            return {
+            prof = {
                 'platform': self.platform,
                 'username': data.get('username') or username,
                 'full_name': data.get('nombre_completo') or None,
                 'profile_url': perfil_url,
                 'photo_url': foto or None,
             }
+            if prof.get('photo_url'):
+                prof['photo_url'] = await local_or_proxy_photo_url(prof['photo_url'], prof['username'], mode='download', page=page)
+            return prof
         finally:
             await context.close()
 
@@ -199,7 +241,13 @@ class XAdapter:
             await page.goto(list_url)
             await page.wait_for_timeout(3000)
             rows = await extraer_usuarios_lista(page, tipo_lista=list_suffix)
-            return [_map_user_item_to_profile(self.platform, r) for r in rows]
+            out: List[Dict[str, Any]] = []
+            for r in rows:
+                item = _map_user_item_to_profile(self.platform, r)
+                if item.get('photo_url'):
+                    item['photo_url'] = await local_or_proxy_photo_url(item['photo_url'], item['username'], mode='download', page=page)
+                out.append(item)
+            return out
         finally:
             await context.close()
 
@@ -213,9 +261,9 @@ class XAdapter:
         return []
 
 
-def get_adapter(platform: str, browser: Browser):
+def get_adapter(platform: str, browser: Browser, tenant: Optional[str] = None):
     if platform == 'instagram':
-        return InstagramAdapter(browser)
+        return InstagramAdapter(browser, tenant)
     if platform == 'facebook':
-        return FacebookAdapter(browser)
-    return XAdapter(browser)
+        return FacebookAdapter(browser, tenant)
+    return XAdapter(browser, tenant)

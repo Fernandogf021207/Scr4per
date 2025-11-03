@@ -35,6 +35,7 @@ async def _process_root(root: Dict[str, Any], browser) -> Dict[str, Any]:
     headless = bool(root.get("headless", True))
     persist = bool(root.get("persist", True))
     strict_sessions = bool(root.get("strict_sessions", False))
+    tenant = root.get("tenant")
 
     rid = _root_id(platform, username)
     warnings: List[Dict[str, str]] = []
@@ -42,7 +43,7 @@ async def _process_root(root: Dict[str, Any], browser) -> Dict[str, Any]:
     relations: List[Dict[str, Any]] = []
 
     # Storage-state check (lax policy by default)
-    storage_path = storage_state_for(platform)
+    storage_path = storage_state_for(platform, tenant)
     if not storage_path or not os.path.isfile(storage_path):
         msg = f"{rid} missing storage_state"
         if strict_sessions:
@@ -57,7 +58,7 @@ async def _process_root(root: Dict[str, Any], browser) -> Dict[str, Any]:
             "timing_seconds": elapsed,
         }
 
-    adapter = get_adapter(platform, browser)
+    adapter = get_adapter(platform, browser, tenant)
 
     try:
         logger.info("root.start rid=%s platform=%s username=%s", rid, platform, username)
@@ -167,6 +168,7 @@ async def multi_scrape_execute(request: Dict[str, Any]) -> Dict[str, Any]:
     persist: bool = bool(request.get("persist", True))
     strict_sessions: bool = bool(request.get("strict_sessions", False))
     max_concurrency: int = int(request.get("max_concurrency") or (1 if len(roots) <= 1 else 3))
+    tenant: Any = request.get("tenant")
 
     t0 = time.perf_counter()
     sem = asyncio.Semaphore(max_concurrency)
@@ -183,6 +185,7 @@ async def multi_scrape_execute(request: Dict[str, Any]) -> Dict[str, Any]:
                 r["headless"] = headless
                 r["persist"] = persist
                 r["strict_sessions"] = strict_sessions
+                r["tenant"] = tenant
                 return await _process_root(r, browser)
 
         tasks = [asyncio.create_task(_guarded(r)) for r in roots]

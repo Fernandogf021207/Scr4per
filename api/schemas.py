@@ -16,8 +16,34 @@ class RelationshipIn(BaseModel):
     platform: Literal['x', 'instagram', 'facebook']
     owner_username: str
     related_username: str
-    rel_type: Literal['follower', 'following', 'followed', 'friend', 'commented', 'reacted']
+    rel_type: str
     updated_at: Optional[datetime] = None
+
+    @validator('rel_type')
+    def _normalize_rel_type(cls, v: str) -> str:
+        if not v:
+            raise ValueError('rel_type requerido')
+        raw = v.strip().lower()
+        # Normalización español → inglés
+        mapping = {
+            'seguidor': 'follower',
+            'seguidores': 'follower',
+            'seguido': 'following',
+            'seguidos': 'following',
+            'amigo': 'friend',
+            'amigos': 'friend',
+            'comentado': 'commented',
+            'comentó': 'commented',
+            'comentados': 'commented',
+            'reaccionado': 'reacted',
+            'reaccionó': 'reacted',
+            'reacciones': 'reacted',
+        }
+        canon = mapping.get(raw, raw)
+        allowed = {'follower', 'following', 'followed', 'friend', 'commented', 'reacted'}
+        if canon not in allowed:
+            raise ValueError('rel_type inválido')
+        return canon
 
 class PostIn(BaseModel):
     platform: Literal['x', 'instagram', 'facebook']

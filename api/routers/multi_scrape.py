@@ -1,4 +1,4 @@
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Header
 from typing import Any, Dict
 
 from ..schemas import MultiScrapeRequest
@@ -9,10 +9,12 @@ router = APIRouter()
 
 
 @router.post("/multi-scrape")
-async def multi_scrape(request: MultiScrapeRequest) -> Dict[str, Any]:
+async def multi_scrape(request: MultiScrapeRequest, x_tenant_id: str | None = Header(default=None, alias="X-Tenant-Id")) -> Dict[str, Any]:
     try:
         # Pasamos un dict simple para facilitar monkeypatch en tests
         payload = request.dict()
+        if x_tenant_id:
+            payload["tenant"] = x_tenant_id
         data = await ms.multi_scrape_execute(payload)
         return data
     except HTTPException:

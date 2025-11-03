@@ -1,3 +1,8 @@
+import logging
+
+logger = logging.getLogger("scraper.output")
+
+
 def guardar_resultados(username, datos_usuario, seguidores, seguidos, comentadores, platform="x", amigos=None):
     import pandas as pd
     import os
@@ -74,10 +79,10 @@ def guardar_resultados(username, datos_usuario, seguidores, seguidos, comentador
                 df_comentadores.to_excel(writer, sheet_name="Comentadores", index=False)
             if not df_amigos.empty:
                 df_amigos.to_excel(writer, sheet_name="Amigos", index=False)
-        print(f"\n✅ Archivo Excel creado: {archivo_excel}")
+        logger.info("Archivo Excel creado", extra={"path": archivo_excel, "username": username, "platform": platform})
         output_result = archivo_excel
     except ImportError:
-        print("\n⚠️ No se pudo guardar como Excel. Usando CSV...")
+        logger.warning("No se pudo guardar como Excel. Usando CSV...", extra={"username": username, "platform": platform})
         datos_usuario_df.to_csv(f"data/output/{base}_usuario.csv", index=False)
         if not df_seguidores.empty:
             df_seguidores.to_csv(f"data/output/{base}_seguidores.csv", index=False)
@@ -95,7 +100,7 @@ def guardar_resultados(username, datos_usuario, seguidores, seguidos, comentador
         try:
             from scripts.api_client import create_or_update_profile, create_relationship, create_post, create_comment
         except Exception as e:
-            print(f"\n⚠️ No se pudo cargar api_client. Omitiendo envío a API. Detalle: {e}")
+            logger.warning("No se pudo cargar api_client. Omitiendo envío a API.", extra={"error": str(e)})
         else:
             try:
                 # Owner profile
@@ -141,9 +146,9 @@ def guardar_resultados(username, datos_usuario, seguidores, seguidos, comentador
                         if post_url and commenter:
                             create_or_update_profile(platform, commenter, c.get('nombre_usuario'), c.get('link_usuario'), c.get('foto_usuario'))
                             create_comment(platform, post_url, commenter)
-                print("\n✅ Envío a API completado")
+                logger.info("Envío a API completado", extra={"username": username, "platform": platform})
             except Exception as e:
-                print(f"\n❌ Error enviando a la API: {e}")
+                logger.error("Error enviando a la API", extra={"error": str(e), "username": username, "platform": platform})
 
     # Optional DB insertion controlled by env var SAVE_TO_DB (fallback if not using API)
 
@@ -152,7 +157,7 @@ def guardar_resultados(username, datos_usuario, seguidores, seguidos, comentador
         try:
             from db.insert import get_conn, upsert_profile, add_relationship, add_post, add_comment
         except Exception as e:
-            print(f"\n⚠️ No se pudo cargar helpers de DB (db/insert.py). Omitiendo inserción. Detalle: {e}")
+            logger.warning("No se pudo cargar helpers de DB (db/insert.py). Omitiendo inserción.", extra={"error": str(e)})
         else:
             try:
                 owner_username = datos_usuario.get('username')
@@ -194,7 +199,7 @@ def guardar_resultados(username, datos_usuario, seguidores, seguidos, comentador
                                     if rel_id is not None:
                                         followers_inserted += 1
                             except Exception as e:
-                                print(f"⚠️ Error insertando seguidor @{u.get('username_usuario')}: {e}")
+                                logger.warning("Error insertando seguidor", extra={"username": u.get('username_usuario'), "error": str(e)})
 
                         # Pre-upsert following with available metadata, then relationships
                         for u in seguidos or []:
@@ -213,7 +218,7 @@ def guardar_resultados(username, datos_usuario, seguidores, seguidos, comentador
                                     if rel_id is not None:
                                         following_inserted += 1
                             except Exception as e:
-                                print(f"⚠️ Error insertando seguido @{u.get('username_usuario')}: {e}")
+                                logger.warning("Error insertando seguido", extra={"username": u.get('username_usuario'), "error": str(e)})
 
                         # Friends (Facebook)
                         for u in amigos or []:
@@ -230,7 +235,7 @@ def guardar_resultados(username, datos_usuario, seguidores, seguidos, comentador
                                     )
                                     add_relationship(cur, platform, owner_username, uname, 'friend')
                             except Exception as e:
-                                print(f"⚠️ Error insertando amigo @{u.get('username_usuario')}: {e}")
+                                logger.warning("Error insertando amigo", extra={"username": u.get('username_usuario'), "error": str(e)})
 
                         # Comments (ensure posts exist first)
                         if comentadores:
@@ -241,7 +246,7 @@ def guardar_resultados(username, datos_usuario, seguidores, seguidos, comentador
                                     if post_id is not None:
                                         posts_inserted += 1
                                 except Exception as e:
-                                    print(f"⚠️ Error insertando post {post_url}: {e}")
+                                    logger.warning("Error insertando post", extra={"post_url": post_url, "error": str(e)})
 
                             for c in comentadores:
                                 try:
@@ -260,15 +265,16 @@ def guardar_resultados(username, datos_usuario, seguidores, seguidos, comentador
                                         if cid is not None:
                                             comments_inserted += 1
                                 except Exception as e:
-                                    print(f"⚠️ Error insertando comentario de @{c.get('username_usuario')} en {c.get('post_url')}: {e}")
-
-                print(f"\n✅ Inserción en DB completada ({platform}):")
-                print(f"   - Seguidores nuevos: {followers_inserted}")
-                print(f"   - Seguidos nuevos: {following_inserted}")
-                print(f"   - Posts nuevos: {posts_inserted}")
-                print(f"   - Comentarios nuevos: {comments_inserted}")
+                                    logger.warning("Error insertando comentario", extra={"commenter": c.get('username_usuario'), "post_url": c.get('post_url'), "error": str(e)})
+                logger.info("Inserción en DB completada", extra={
+                    "platform": platform,
+                    "followers_new": followers_inserted,
+                    "following_new": following_inserted,
+                    "posts_new": posts_inserted,
+                    "comments_new": comments_inserted,
+                })
             except Exception as e:
-                print(f"\n❌ Error general insertando en DB: {e}")
+                logger.error("Error general insertando en DB", extra={"error": str(e), "platform": platform})
 
 
     return output_result
