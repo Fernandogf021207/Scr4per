@@ -92,7 +92,9 @@ async def navegar_a_lista(page, perfil_url: str, lista: str) -> bool:
 
 # ---------- Extracción genérica de usuarios en listados ----------
 async def extraer_usuarios_listado(page, tipo_lista: str, usuario_principal: str) -> List[dict]:
-	"""Hace scroll y extrae tarjetas de usuarios en un listado (friends/followers/followed)."""
+	"""Hace scroll y extrae tarjetas de usuarios en un listado (friends/followers/followed).
+	Optimizado: extracción en lote por evaluate, espera adaptativa corta, y procesar-solo-nuevos.
+	"""
 	usuarios: Dict[str, dict] = {}
 
 	cfg = FACEBOOK_CONFIG.get('scroll', {})
@@ -100,10 +102,76 @@ async def extraer_usuarios_listado(page, tipo_lista: str, usuario_principal: str
 	pause_ms = int(cfg.get('pause_ms', 1500))
 	max_no_new = int(cfg.get('max_no_new', 6))
 
+	async def _extract_visible_batch(page_) -> List[dict]:
+		js = '''
+		() => {
+		  const root = document.querySelector('div[role="main"]') || document;
+		  const anchors = Array.from(root.querySelectorAll('a[href^="/"]'));
+		  const out = [];
+		  for (const a of anchors) {
+			const href = a.getAttribute('href') || '';
+			// excluir rutas obvias no-perfil y estados
+			if (!href || href.includes('/status/') || href.includes('/groups/') || href.includes('/events/')) continue;
+			const text = (a.textContent || '').trim();
+			let img = '';
+			const cont = a.closest('div');
+			const imgel = cont ? (cont.querySelector('img, image') || a.querySelector('img, image')) : a.querySelector('img, image');
+			if (imgel) {
+			  img = imgel.currentSrc || imgel.src || imgel.getAttribute('xlink:href') || '';
+			}
+			out.push({ href, text, img });
+		  }
+		  return out;
+		}
+		'''
+		try:
+			data = await page_.evaluate(js)
+			return data or []
+		except Exception:
+			return []
+
 	async def process_cb(page_, _container) -> int:
+		from time import perf_counter
+		t0 = perf_counter()
 		before = len(usuarios)
-		await procesar_tarjetas_usuario(page_, usuarios, usuario_principal)
-		return len(usuarios) - before
+		raw = await _extract_visible_batch(page_)
+		# Mapear y filtrar sólo nuevos
+		invalid_paths = [
+			'photo', 'groups', 'events', 'pages', 'watch', 'marketplace', 'reel',
+			'reviews_given', 'reviews_written', 'video_movies_watch', 'profile_songs',
+			'places_recent', 'posts/'
+		]
+		for rec in raw:
+			try:
+				href = rec.get('href') or ''
+				if not href:
+					continue
+				url = normalize_profile_url(href)
+				if not url:
+					continue
+				if any(f"/{pat}" in url for pat in invalid_paths):
+					continue
+				slug = url.split('facebook.com/')[-1].strip('/')
+				if slug in ('', 'friends', 'followers', 'following'):
+					continue
+				if slug == usuario_principal:
+					continue
+				if url in usuarios:
+					continue
+				nombre = (rec.get('text') or '').strip() or slug.split('?')[0]
+				foto = rec.get('img') or ''
+				usuarios[url] = build_user_item('facebook', url, nombre, foto)
+			except Exception:
+				continue
+		added = len(usuarios) - before
+		ms = int((perf_counter() - t0) * 1000)
+		logger.info("fb.list.cycle tipo=%s added=%d total=%d ms=%d", tipo_lista, added, len(usuarios), ms)
+		# Espera adaptativa corta entre ciclos para permitir render
+		try:
+			await page_.wait_for_timeout(400)
+		except Exception:
+			pass
+		return added
 
 	await scroll_collect(
 		page,
@@ -114,7 +182,7 @@ async def extraer_usuarios_listado(page, tipo_lista: str, usuario_principal: str
 		no_new_threshold=max_no_new,
 		bottom_margin=800,
 		pause_every=10,
-		pause_every_ms=5000,
+		pause_every_ms=1500,
 	)
 	return list(usuarios.values())
 

@@ -16,56 +16,116 @@ import logging
 logger = logging.getLogger(__name__)
 
 async def extraer_usuarios_lista(page, tipo_lista="seguidores"):
-    """Extraer usuarios de una lista (seguidores o seguidos) con scroll mejorado"""
+    """Extraer usuarios de una lista (seguidores o seguidos) con scroll optimizado.
+    Patrón: evaluate en lote + espera adaptativa + procesar-solo-nuevos.
+    """
     logger.info("Cargando %s...", tipo_lista)
     usuarios_dict = {}
-    
+
     scroll_attempts = 0
     max_scroll_attempts = 50
     no_new_content_count = 0
     max_no_new_content = 5
-    
-    await page.wait_for_timeout(3000)
-    
+
+    await page.wait_for_timeout(2000)
+
+    async def _extract_visible_batch(page_):
+        js = '''
+        () => {
+          const root = document.querySelector('[data-testid="primaryColumn"]') || document;
+          const anchors = Array.from(root.querySelectorAll('a[role="link"][href^="/"]'));
+          const out = [];
+          for (const a of anchors) {
+            const href = a.getAttribute('href') || '';
+            if (!href || href.includes('/status/')) continue;
+            // filtrar anchors de navegación no-usuario (heurístico: 1 segmento)
+            const m = href.match(/^\/([A-Za-z0-9_\.]+)(\/?|$)/);
+            if (!m) continue;
+            let img = '';
+            const cont = a.closest('article, div');
+            const imgel = cont ? (cont.querySelector('img[src*="profile_images"], img[alt*="avatar"]') || a.querySelector('img')) : a.querySelector('img');
+            if (imgel) {
+              img = imgel.currentSrc || imgel.src || '';
+            }
+            const text = (a.textContent || '').trim();
+            out.push({ href, text, img });
+          }
+          return out;
+        }
+        '''
+        try:
+            data = await page_.evaluate(js)
+            return data or []
+        except Exception:
+            return []
+
     while scroll_attempts < max_scroll_attempts and no_new_content_count < max_no_new_content:
         try:
+            from time import perf_counter
+            t0 = perf_counter()
             current_user_count = len(usuarios_dict)
-            
-            await scroll_window(page, 0)  # helper applies a sensible default
-            
-            await page.wait_for_timeout(2000)
-            nuevos_usuarios_encontrados = await procesar_usuarios_en_pagina(page, usuarios_dict)
-            
+
+            await scroll_window(page, 0)
+            try:
+                await page.wait_for_timeout(400)
+            except Exception:
+                pass
+
+            batch = await _extract_visible_batch(page)
+            added_now = 0
+            for rec in batch:
+                try:
+                    href = rec.get('href') or ''
+                    if not href or '/status/' in href:
+                        continue
+                    url_usuario = f"https://x.com{href}"
+                    item = build_user_item('x', url_usuario, None, rec.get('img') or None)
+                    url_limpia = item['link_usuario']
+                    username_usuario = item['username_usuario']
+                    # Validaciones rápidas
+                    if (not username_usuario) or username_usuario.isdigit() or len(username_usuario) < 2 or len(username_usuario) > 50:
+                        continue
+                    if url_limpia in usuarios_dict:
+                        continue
+                    nombre = (rec.get('text') or '').strip() or username_usuario
+                    usuarios_dict[url_limpia] = build_user_item('x', url_usuario, nombre, rec.get('img') or None)
+                    added_now += 1
+                except Exception:
+                    continue
+
             if len(usuarios_dict) > current_user_count:
                 no_new_content_count = 0
-                logger.info("%s: %d usuarios encontrados (scroll %d)", tipo_lista, len(usuarios_dict), scroll_attempts + 1)
             else:
                 no_new_content_count += 1
-                logger.info("Sin nuevos usuarios en scroll %d (intentos sin contenido: %d)", scroll_attempts + 1, no_new_content_count)
-            
+
+            ms = int((perf_counter() - t0) * 1000)
+            logger.info("x.list.cycle tipo=%s added=%d total=%d ms=%d", tipo_lista, added_now, len(usuarios_dict), ms)
+
             scroll_attempts += 1
-            
+
             if scroll_attempts % 10 == 0:
-                logger.info("Pausa para evitar rate limiting... (%d usuarios hasta ahora)", len(usuarios_dict))
-                await page.wait_for_timeout(5000)
-            
+                logger.info("Pausa breve para evitar rate limiting... (%d usuarios hasta ahora)", len(usuarios_dict))
+                await page.wait_for_timeout(1500)
+
             is_at_bottom = await page.evaluate(
-                "() => (window.innerHeight + window.pageYOffset) >= (document.body.scrollHeight - 1000)"
+                "() => (window.innerHeight + window.pageYOffset) >= (document.body.scrollHeight - 800)"
             )
-            
+
             if is_at_bottom and no_new_content_count >= 3:
                 logger.info("Llegamos al final de la lista de %s", tipo_lista)
                 break
-                
+
         except Exception as e:
             logger.warning(f"Error en scroll {scroll_attempts}: {e}")
             no_new_content_count += 1
-            
-        await page.wait_for_timeout(1000)
+            try:
+                await page.wait_for_timeout(400)
+            except Exception:
+                pass
 
     logger.info("Scroll completado para %s. Total de scrolls: %d", tipo_lista, scroll_attempts)
     logger.info("Usuarios únicos extraídos: %d", len(usuarios_dict))
-    
+
     return list(usuarios_dict.values())
 
 async def extraer_comentadores_x(page, max_posts=10):

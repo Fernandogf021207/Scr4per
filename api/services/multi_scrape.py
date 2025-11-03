@@ -173,20 +173,31 @@ async def multi_scrape_execute(request: Dict[str, Any]) -> Dict[str, Any]:
     t0 = time.perf_counter()
     sem = asyncio.Semaphore(max_concurrency)
 
+    # Per-platform concurrency guards (serialize Instagram by default to reduce throttling)
+    req_limits = request.get("platform_limits") or {}
+    # Default: Instagram sequential (1), others default to max_concurrency
+    default_limits = {"instagram": 1}
+    limits = {**default_limits, **{k: int(v) for k, v in req_limits.items() if isinstance(v, (int, str))}}
+    platforms = set([r.get("platform") for r in roots])
+    sem_platforms = {p: asyncio.Semaphore(int(limits.get(p, max_concurrency))) for p in platforms}
+
     run_id = secrets.token_hex(6)
     logger.info("multi_scrape.start rid=%s roots=%d", run_id, len(roots))
 
     browser = await launch_browser(headless=headless)
     try:
         async def _guarded(root):
+            platform = root.get("platform")
+            psem = sem_platforms.get(platform, sem)
             async with sem:
-                # inject global flags into root for processing
-                r = dict(root)
-                r["headless"] = headless
-                r["persist"] = persist
-                r["strict_sessions"] = strict_sessions
-                r["tenant"] = tenant
-                return await _process_root(r, browser)
+                async with psem:
+                    # inject global flags into root for processing
+                    r = dict(root)
+                    r["headless"] = headless
+                    r["persist"] = persist
+                    r["strict_sessions"] = strict_sessions
+                    r["tenant"] = tenant
+                    return await _process_root(r, browser)
 
         tasks = [asyncio.create_task(_guarded(r)) for r in roots]
         results: List[Dict[str, Any]] = []
@@ -248,6 +259,7 @@ async def multi_scrape_execute(request: Dict[str, Any]) -> Dict[str, Any]:
             "build_ms": build_ms,
             "roots_timings": roots_timings,
             "max_concurrency": max_concurrency,
+            "platform_limits": {k: sem_platforms[k]._value if hasattr(sem_platforms[k], "_value") else limits.get(k, max_concurrency) for k in sem_platforms},
         },
     }
     logger.info("multi_scrape.done rid=%s profiles=%d relations=%d", run_id, len(profiles), len(relations))

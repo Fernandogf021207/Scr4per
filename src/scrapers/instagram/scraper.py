@@ -109,6 +109,7 @@ async def extraer_usuarios_instagram(page, tipo_lista="seguidores", usuario_prin
     no_new_users_count = 0
     max_no_new_users = 6
 
+    recent_additions = 0
     while scroll_attempts < max_scrolls and no_new_users_count < max_no_new_users:
         try:
             current_user_count = len(usuarios_dict)
@@ -118,15 +119,35 @@ async def extraer_usuarios_instagram(page, tipo_lista="seguidores", usuario_prin
             else:
                 await scroll_window(page, 800)
 
-            # Espera adaptativa más corta para cargar nuevos items
+            # Espera adaptativa: poll hasta 1200ms a ver si aumentan los nodos visibles
             try:
-                if container:
-                    # Pequeña espera para dar tiempo a renderizar
-                    await page.wait_for_timeout(400)
-                else:
-                    await page.wait_for_timeout(400)
+                js_count = '''
+                (sels) => {
+                  for (const sel of sels) {
+                    const nodes = document.querySelectorAll(sel);
+                    if (nodes && nodes.length) return nodes.length;
+                  }
+                  return 0;
+                }
+                '''
+                selectors = [
+                    'div[role="dialog"] div[style*="flex-direction: column"] > div',
+                    'div[role="dialog"] div > div:has(a[role="link"])',
+                    'div[aria-modal="true"] div:has(a[role="link"])',
+                    f'div[aria-label="{tipo_lista.capitalize()}"] div:has(a)',
+                    'div[role="dialog"] a[role="link"]'
+                ]
+                base_count = await page.evaluate(js_count, selectors)
+                waited = 0
+                while waited < 1200:
+                    await page.wait_for_timeout(200)
+                    new_count = await page.evaluate(js_count, selectors)
+                    if new_count > base_count:
+                        break
+                    waited += 200
             except Exception:
-                pass
+                # Fallback a pequeña espera fija
+                await page.wait_for_timeout(400)
 
             # Procesar usuarios después del scroll
             await procesar_usuarios_en_modal(page, usuarios_dict, usuario_principal, tipo_lista)
@@ -134,6 +155,7 @@ async def extraer_usuarios_instagram(page, tipo_lista="seguidores", usuario_prin
             # Verificar si se agregaron nuevos usuarios
             if len(usuarios_dict) > current_user_count:
                 no_new_users_count = 0
+                recent_additions += 1
                 logger.info("%s: %d usuarios encontrados (scroll %d)", tipo_lista, len(usuarios_dict), scroll_attempts + 1)
             else:
                 no_new_users_count += 1
@@ -145,6 +167,10 @@ async def extraer_usuarios_instagram(page, tipo_lista="seguidores", usuario_prin
             if scroll_attempts % 12 == 0:
                 logger.info("Pausa breve para evitar rate limiting... (%d usuarios hasta ahora)", len(usuarios_dict))
                 await page.wait_for_timeout(1500)
+
+            # Extender dinámicamente el máximo si seguimos añadiendo a última hora
+            if scroll_attempts >= max_scrolls - 2 and recent_additions >= 2 and max_scrolls < 120:
+                max_scrolls = min(120, max_scrolls + 20)
 
             # Verificar si llegamos al final del contenedor
             is_at_bottom = False
