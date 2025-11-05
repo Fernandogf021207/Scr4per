@@ -3,7 +3,7 @@ import sys
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from paths import STORAGE_DIR, PUBLIC_IMAGES_PREFIX_PRIMARY, PUBLIC_IMAGES_PREFIX_COMPAT, ensure_dirs
+from paths import STORAGE_DIR, ensure_dirs
 from src.utils.logging_config import setup_logging
 
 # Make repo root importable
@@ -31,13 +31,7 @@ def create_app() -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
-
-    # Static mounts
-    # Directorio real: <repo>/data/storage
-    # Exponemos dos prefijos:
-    #  - /data/storage  (contrato actual devuelto por upload-image)
-    #  - /storage       (alias de compatibilidad)
-    # Esto permite eliminar cualquier carpeta duplicada bajo api/.
+    # Static files
     ensure_dirs()
     if os.path.isdir(STORAGE_DIR):
         app.mount("/data/storage", StaticFiles(directory=STORAGE_DIR), name="data_storage")
