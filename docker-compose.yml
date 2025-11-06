@@ -2,23 +2,19 @@ services:
   scr4per_api:
     image: osint:1.0
     build: .
-    restart: "no"
+    restart: unless-stopped
     container_name: OSINT-API
     ports:
-      - "443:443"
+      - "8443:8443"
     env_file:
       - ./db/.env
-    environment:
-      # Override host to reach Postgres on the host machine from inside the container
-      POSTGRES_HOST: host.docker.internal
     volumes:
-      # Persist data, including storage and certs
+      # Mount the real certificates that live on the VM host
+      - /opt/naat/fullchain.pem:/app/data/config/certs/fullchain.pem:ro
+      - /opt/naat/naatapi.key:/app/data/config/certs/naatapi.key:ro
+      # Persist data and logs
       - ./data:/app/data
-      # Optional: persist logs outside container
       - ./logs:/app/logs
-    extra_hosts:
-      # Ensure host.docker.internal resolves on Linux
-      - "host.docker.internal:host-gateway"
     command: [
       "uvicorn", "api.main:app",
       "--host", "0.0.0.0",
