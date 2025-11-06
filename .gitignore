@@ -25,6 +25,9 @@ scripts/
 .vscode/
 .idea/
 
+#certificados TLS
+certs/
+
 # Dependency lock files
 Pipfile.lock
 poetry.lock

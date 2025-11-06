@@ -61,8 +61,8 @@ COPY src/ ./src
 COPY db/ ./db
 COPY paths.py ./paths.py
 
-# Exponer el puerto de la aplicación
-EXPOSE 8000
+# Exponer los puertos (dev 8000, prod TLS 443)
+EXPOSE 8000 443
 
-#Comando para ejecutar la aplicación
+# Comando por defecto (puerto 8000 sin TLS); puede ser sobreescrito por docker-compose
 CMD ["uvicorn", "api.main:app","--host","0.0.0.0","--port", "8000"]
