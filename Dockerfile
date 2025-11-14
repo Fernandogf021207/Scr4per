@@ -42,6 +42,7 @@ RUN apt-get update && apt-get install -y \
     libxtst6 \
     lsb-release \
     xdg-utils \
+    git \
     && rm -rf /var/lib/apt/lists/*
 
 # Path del directorio
