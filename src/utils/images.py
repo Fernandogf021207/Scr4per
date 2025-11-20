@@ -58,20 +58,24 @@ DEFAULT_HEADERS = {
 async def download_profile_image(
     photo_url: str,
     username: str,
+    platform: str,  # 'red_x', 'red_instagram', 'red_facebook'
     *,
+    photo_owner: Optional[str] = None,  # Username del dueño de la foto (default: username)
     overwrite: bool = False,
     timeout: float = 20.0,
     page: Optional[object] = None,
     on_failure: str = "proxy",  # 'empty' | 'proxy' | 'raise'
 ) -> str:
     """
-    Descarga la foto de perfil al servidor y devuelve la ruta local accesible por el frontend.
+    Descarga la foto de perfil y la sube al FTP.
 
-    - Crea storage/images si no existe.
+    - username: Usuario root (carpeta FTP: rs/{platform}/{username}/images/)
+    - photo_owner: Usuario dueño de la foto (filename: {photo_owner}.jpg)
+    - Sube a FTP en la estructura: rs/{platform}/{username}/images/{photo_owner}.{ext}
     - Deduce la extensión por content-type o URL (fallback .jpg).
     - Evita re-descargar si ya existe (a menos que overwrite=True).
 
-    Returns: ruta relativa tipo "/data/storage/images/<username>.<ext>"
+    Returns: ruta FTP tipo "/files/scraped-image/{platform}/{username}/{filename}"
     """
     if not photo_url:
         return ""
@@ -91,7 +95,8 @@ async def download_profile_image(
                 pass
 
             ext = _extension_from_headers(content_type, photo_url)
-            filename = f"{_safe_filename(username)}{ext}"
+            owner = photo_owner or username
+            filename = f"{_safe_filename(owner)}{ext}"
             file_path = os.path.join(IMAGES_DIR, filename)
 
             if not overwrite and os.path.exists(file_path):
@@ -105,15 +110,33 @@ async def download_profile_image(
             final_ct = resp.headers.get("content-type")
             final_ext = _extension_from_headers(final_ct, photo_url)
             if final_ext != ext:
-                filename = f"{_safe_filename(username)}{final_ext}"
+                owner = photo_owner or username
+                filename = f"{_safe_filename(owner)}{final_ext}"
                 file_path = os.path.join(IMAGES_DIR, filename)
 
-            # Write to disk atomically-ish
-            tmp_path = f"{file_path}.part"
-            with open(tmp_path, "wb") as f:
-                f.write(resp.content)
-            os.replace(tmp_path, file_path)
-        return f"{PUBLIC_IMAGES_PREFIX_PRIMARY}/{filename}"
+            # Upload to FTP
+            try:
+                from src.utils.ftp_storage import get_ftp_client
+                ftp = get_ftp_client()
+                ftp.upload(
+                    platform=platform,
+                    username=username,
+                    category='images',
+                    filename=filename,
+                    data=resp.content
+                )
+                return f"/files/scraped-image/{platform}/{username}/{filename}"
+            except Exception as ftp_error:
+                # Fallback to local storage on FTP failure
+                import logging
+                logger = logging.getLogger(__name__)
+                logger.warning(f"FTP upload failed, using local fallback: {ftp_error}")
+                ensure_dirs()
+                tmp_path = f"{file_path}.part"
+                with open(tmp_path, "wb") as f:
+                    f.write(resp.content)
+                os.replace(tmp_path, file_path)
+                return f"{PUBLIC_IMAGES_PREFIX_PRIMARY}/{filename}"
     except Exception:
         # Fallback using Playwright page with session cookies if provided
         if page is not None:
@@ -122,13 +145,30 @@ async def download_profile_image(
                 if r.ok:
                     ct = r.headers.get("content-type", "")
                     ext = ".png" if "png" in ct else ".webp" if "webp" in ct else ".jpg"
-                    filename = f"{_safe_filename(username)}{ext}"
-                    file_path = os.path.join(IMAGES_DIR, filename)
-                    tmp_path = f"{file_path}.part"
-                    with open(tmp_path, "wb") as f:
-                        f.write(await r.body())
-                    os.replace(tmp_path, file_path)
-                    return f"{PUBLIC_IMAGES_PREFIX_PRIMARY}/{filename}"
+                    owner = photo_owner or username
+                    filename = f"{_safe_filename(owner)}{ext}"
+                    body_data = await r.body()
+                    # Try FTP first
+                    try:
+                        from src.utils.ftp_storage import get_ftp_client
+                        ftp = get_ftp_client()
+                        ftp.upload(
+                            platform=platform,
+                            username=username,
+                            category='images',
+                            filename=filename,
+                            data=body_data
+                        )
+                        return f"/files/scraped-image/{platform}/{username}/{filename}"
+                    except Exception:
+                        # Fallback to local
+                        ensure_dirs()
+                        file_path = os.path.join(IMAGES_DIR, filename)
+                        tmp_path = f"{file_path}.part"
+                        with open(tmp_path, "wb") as f:
+                            f.write(body_data)
+                        os.replace(tmp_path, file_path)
+                        return f"{PUBLIC_IMAGES_PREFIX_PRIMARY}/{filename}"
             except Exception:
                 pass
         # Final fallback policy
@@ -142,7 +182,9 @@ async def download_profile_image(
 async def local_or_proxy_photo_url(
     photo_url: str,
     username: str,
+    platform: str,  # 'red_x', 'red_instagram', 'red_facebook'
     mode: str = "download",
+    photo_owner: Optional[str] = None,  # Username del dueño de la foto
     page: Optional[object] = None,
     on_failure: str = "proxy",
     retries: int = 3,
@@ -150,7 +192,9 @@ async def local_or_proxy_photo_url(
 ) -> str:
     """
     Devuelve una URL utilizable por el frontend para mostrar la imagen de perfil.
-    - mode="download": descarga y devuelve "/storage/images/<file>"
+    - username: Usuario root (carpeta FTP)
+    - photo_owner: Usuario dueño de la foto (filename)
+    - mode="download": descarga y devuelve "/files/scraped-image/{platform}/{username}/{filename}"
     - mode="proxy": usa el endpoint /proxy-image para evitar CORS sin guardar
     - mode="external": devuelve la URL original (si el frontend puede cargarla)
     """
@@ -164,14 +208,14 @@ async def local_or_proxy_photo_url(
     if mode == "external":
         return photo_url
     # default -> download with retries
-    # If already a local storage path, return as-is
-    if str(photo_url).startswith('/storage/'):
+    # If already a local storage or FTP path, return as-is
+    if str(photo_url).startswith('/storage/') or str(photo_url).startswith('/files/'):
         return photo_url
 
     attempts = max(1, int(retries))
     for i in range(attempts):
-        result = await download_profile_image(photo_url, username, page=page, on_failure='proxy')
-        if result and (result.startswith('/storage/') or result.startswith(PUBLIC_IMAGES_PREFIX_PRIMARY)):
+        result = await download_profile_image(photo_url, username, platform, photo_owner=photo_owner, page=page, on_failure='proxy')
+        if result and (result.startswith('/storage/') or result.startswith(PUBLIC_IMAGES_PREFIX_PRIMARY) or result.startswith('/files/')):
             return result
         if i < attempts - 1:
             try:
