@@ -47,6 +47,8 @@ def _extract_fields(item: Dict[str, Any]) -> Dict[str, Optional[str]]:
 @router.post("/scrape")
 async def scrape(req: ScrapeRequest):
     platform = req.platform
+    # Map platform to FTP directory names (red_x, red_instagram, red_facebook)
+    platform_schema = f"red_{platform}"
     url = normalize_input_url(platform, req.url)
     max_photos = req.max_photos or 5
 
@@ -120,10 +122,11 @@ async def scrape(req: ScrapeRequest):
             with get_conn() as conn:
                 with conn.cursor() as cur:
                     try:
-                        if perfil_obj.get('photo_url') and not str(perfil_obj['photo_url']).startswith('/storage/'):
+                        if perfil_obj.get('photo_url') and not str(perfil_obj['photo_url']).startswith(('/storage/', '/files/')):
                             perfil_obj['photo_url'] = await local_or_proxy_photo_url(
                                 perfil_obj.get('photo_url'),
                                 perfil_obj.get('username'),
+                                platform_schema,
                                 mode='download',
                                 page=page,
                                 on_failure='empty',
@@ -154,11 +157,11 @@ async def scrape(req: ScrapeRequest):
                     async def _ensure_local_photo(url: Optional[str], uname: str) -> str:
                         if not url:
                             return ""
-                        if str(url).startswith('/storage/'):
+                        if str(url).startswith(('/storage/', '/files/')):
                             return url
                         try:
                             return await local_or_proxy_photo_url(
-                                url, uname, mode='download', page=page, on_failure='empty', retries=5, backoff_seconds=0.5
+                                url, uname, platform_schema, mode='download', page=page, on_failure='empty', retries=5, backoff_seconds=0.5
                             )
                         except Exception:
                             return ""
@@ -254,12 +257,13 @@ async def scrape(req: ScrapeRequest):
                     await local_or_proxy_photo_url(
                         perfil_obj.get("photo_url"),
                         perfil_obj.get("username"),
+                        platform_schema,
                         mode="download",
                         page=page,
                         on_failure='empty',
                         retries=5,
                         backoff_seconds=0.5,
-                    ) if (perfil_obj.get("photo_url") and not str(perfil_obj.get("photo_url")).startswith('/storage/')) else perfil_obj.get("photo_url")
+                    ) if (perfil_obj.get("photo_url") and not str(perfil_obj.get("photo_url")).startswith(('/storage/', '/files/'))) else perfil_obj.get("photo_url")
                 ),
             }
             relacionados_out = [
@@ -269,12 +273,13 @@ async def scrape(req: ScrapeRequest):
                         await local_or_proxy_photo_url(
                             item.get("photo_url"),
                             item.get("username"),
+                            platform_schema,
                             mode="download",
                             page=page,
                             on_failure='empty',
                             retries=5,
                             backoff_seconds=0.5,
-                        ) if (item.get("photo_url") and item.get("username") and not str(item.get("photo_url")).startswith('/storage/')) else item.get("photo_url")
+                        ) if (item.get("photo_url") and item.get("username") and not str(item.get("photo_url")).startswith(('/storage/', '/files/'))) else item.get("photo_url")
                     ),
                 }
                 for item in relacionados

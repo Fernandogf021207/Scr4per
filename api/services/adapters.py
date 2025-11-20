@@ -103,7 +103,8 @@ class InstagramAdapter:
             }
             # Ensure local image path
             if prof.get('photo_url'):
-                prof['photo_url'] = await local_or_proxy_photo_url(prof['photo_url'], prof['username'], mode='download', page=page)
+                platform_ftp = f"red_{self.platform}"
+                prof['photo_url'] = await local_or_proxy_photo_url(prof['photo_url'], username, platform_ftp, mode='download', photo_owner=prof['username'], page=page)
             return prof
         finally:
             await context.close()
@@ -115,11 +116,12 @@ class InstagramAdapter:
             logger.info("list.start platform=%s type=followers username=%s ctx=%s", self.platform, username, id(context))
             perfil_url = _profile_url(self.platform, username)
             rows = await scrap_seguidores(page, perfil_url, username)
+            platform_ftp = f"red_{self.platform}"
             out: List[Dict[str, Any]] = []
             for r in rows:
                 item = _map_user_item_to_profile(self.platform, r)
                 if item.get('photo_url'):
-                    item['photo_url'] = await local_or_proxy_photo_url(item['photo_url'], item['username'], mode='download', page=page)
+                    item['photo_url'] = await local_or_proxy_photo_url(item['photo_url'], username, platform_ftp, mode='download', photo_owner=item['username'], page=page)
                 out.append(item)
             return out
         finally:
@@ -132,11 +134,12 @@ class InstagramAdapter:
             logger.info("list.start platform=%s type=following username=%s ctx=%s", self.platform, username, id(context))
             perfil_url = _profile_url(self.platform, username)
             rows = await scrap_seguidos(page, perfil_url, username)
+            platform_ftp = f"red_{self.platform}"
             out: List[Dict[str, Any]] = []
             for r in rows:
                 item = _map_user_item_to_profile(self.platform, r)
                 if item.get('photo_url'):
-                    item['photo_url'] = await local_or_proxy_photo_url(item['photo_url'], item['username'], mode='download', page=page)
+                    item['photo_url'] = await local_or_proxy_photo_url(item['photo_url'], username, platform_ftp, mode='download', photo_owner=item['username'], page=page)
                 out.append(item)
             return out
         finally:
@@ -177,7 +180,8 @@ class FacebookAdapter:
                 'photo_url': data.get('foto_perfil') or None,
             }
             if prof.get('photo_url'):
-                prof['photo_url'] = await local_or_proxy_photo_url(prof['photo_url'], prof['username'], mode='download', page=page)
+                platform_ftp = f"red_{self.platform}"
+                prof['photo_url'] = await local_or_proxy_photo_url(prof['photo_url'], username, platform_ftp, mode='download', photo_owner=prof['username'], page=page)
             return prof
         finally:
             await context.close()
@@ -192,11 +196,12 @@ class FacebookAdapter:
             if not ok:
                 return []
             rows = await extraer_usuarios_listado(page, lista, username)
+            platform_ftp = f"red_{self.platform}"
             out: List[Dict[str, Any]] = []
             for r in rows:
                 item = _map_user_item_to_profile(self.platform, r)
                 if item.get('photo_url'):
-                    item['photo_url'] = await local_or_proxy_photo_url(item['photo_url'], item['username'], mode='download', page=page)
+                    item['photo_url'] = await local_or_proxy_photo_url(item['photo_url'], username, platform_ftp, mode='download', photo_owner=item['username'], page=page)
                 out.append(item)
             return out
         finally:
@@ -221,11 +226,12 @@ class FacebookAdapter:
             logger.info("list.start platform=%s type=photo_reactors username=%s ctx=%s", self.platform, username, id(context))
             perfil_url = _profile_url(self.platform, username)
             rows = await scrap_reacciones_fotos(page, perfil_url, username, max_fotos=max_photos, incluir_comentarios=include_comment_reactions)
+            platform_ftp = f"red_{self.platform}"
             out: List[Dict[str, Any]] = []
             for r in rows:
                 item = _map_user_item_to_profile(self.platform, r)
                 if item.get('photo_url'):
-                    item['photo_url'] = await local_or_proxy_photo_url(item['photo_url'], item['username'], mode='download', page=page)
+                    item['photo_url'] = await local_or_proxy_photo_url(item['photo_url'], username, platform_ftp, mode='download', photo_owner=item['username'], page=page)
                 out.append(item)
             return out
         finally:
@@ -241,11 +247,12 @@ class FacebookAdapter:
             logger.info("list.start platform=%s type=photo_commenters username=%s ctx=%s", self.platform, username, id(context))
             perfil_url = _profile_url(self.platform, username)
             rows = await scrap_comentarios_fotos(page, perfil_url, username, max_fotos=max_photos)
+            platform_ftp = f"red_{self.platform}"
             out: List[Dict[str, Any]] = []
             for r in rows:
                 item = _map_user_item_to_profile(self.platform, r)
                 if item.get('photo_url'):
-                    item['photo_url'] = await local_or_proxy_photo_url(item['photo_url'], item['username'], mode='download', page=page)
+                    item['photo_url'] = await local_or_proxy_photo_url(item['photo_url'], username, platform_ftp, mode='download', photo_owner=item['username'], page=page)
                 out.append(item)
             return out
         finally:
@@ -286,7 +293,8 @@ class XAdapter:
                 'photo_url': foto or None,
             }
             if prof.get('photo_url'):
-                prof['photo_url'] = await local_or_proxy_photo_url(prof['photo_url'], prof['username'], mode='download', page=page)
+                platform_ftp = f"red_{self.platform}"
+                prof['photo_url'] = await local_or_proxy_photo_url(prof['photo_url'], username, platform_ftp, mode='download', photo_owner=prof['username'], page=page)
             return prof
         finally:
             await context.close()
@@ -301,11 +309,12 @@ class XAdapter:
             await page.goto(list_url)
             await page.wait_for_timeout(3000)
             rows = await extraer_usuarios_lista(page, tipo_lista=list_suffix)
+            platform_ftp = f"red_{self.platform}"
             out: List[Dict[str, Any]] = []
             for r in rows:
                 item = _map_user_item_to_profile(self.platform, r)
                 if item.get('photo_url'):
-                    item['photo_url'] = await local_or_proxy_photo_url(item['photo_url'], item['username'], mode='download', page=page)
+                    item['photo_url'] = await local_or_proxy_photo_url(item['photo_url'], username, platform_ftp, mode='download', photo_owner=item['username'], page=page)
                 out.append(item)
             return out
         finally:
