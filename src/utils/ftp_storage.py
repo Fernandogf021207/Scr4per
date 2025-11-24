@@ -58,7 +58,8 @@ class FTPClient:
         FTP_PORT: FTP port (default: 21)
         FTP_USER_RO: FTP username
         FTP_PASS_RO: FTP password
-        FTP_BASE_PATH: Base directory on FTP server (e.g., ftp/upload/RS)
+        FTP_ABSOLUTE_PATH: Absolute directory to navigate to after login (e.g., ftp/upload)
+        FTP_BASE_PATH: Base directory relative to FTP_ABSOLUTE_PATH (e.g., rs)
         FTP_TIMEOUT: Connection timeout in seconds (default: 30)
         FTP_ENCODING: File encoding (default: utf-8)
     """
@@ -72,8 +73,9 @@ class FTPClient:
         self.port = int(os.getenv('FTP_PORT', '21'))
         self.username = os.getenv('FTP_USER_RO', 'ftpuser')
         self.password = os.getenv('FTP_PASS_RO', '')
-        # Base path relative to working directory (ftp/upload)
-        # Since we cwd to ftp/upload on connect, this is just 'rs'
+        # Absolute path to navigate to after login
+        self.absolute_path = os.getenv('FTP_ABSOLUTE_PATH', 'ftp/upload')
+        # Base path relative to absolute_path
         self.base_path = os.getenv('FTP_BASE_PATH', 'rs')
         self.timeout = int(os.getenv('FTP_TIMEOUT', '30'))
         self.encoding = os.getenv('FTP_ENCODING', 'utf-8')
@@ -82,7 +84,7 @@ class FTPClient:
         # Cache de directorios ya creados para evitar intentos repetidos
         self._created_dirs: set = set()
         
-        logger.info(f"FTPClient initialized: {self.host}:{self.port}, base_path={self.base_path}")
+        logger.info(f"FTPClient initialized: {self.host}:{self.port}, absolute_path={self.absolute_path}, base_path={self.base_path}")
     
     def _connect(self) -> FTP:
         """Establish FTP connection."""
@@ -102,13 +104,13 @@ class FTPClient:
             ftp.login(self.username, self.password)
             ftp.encoding = self.encoding
             
-            # Navigate to working directory (ftp/upload)
-            # This ensures all paths are relative to /home/ftpuser/ftp/upload
+            # Navigate to absolute working directory
+            # This ensures all paths are relative to the configured absolute path
             try:
-                ftp.cwd('ftp/upload')
+                ftp.cwd(self.absolute_path)
                 logger.debug(f"Changed to working directory: {ftp.pwd()}")
             except error_perm as e:
-                logger.warning(f"Could not change to ftp/upload: {e}")
+                logger.warning(f"Could not change to {self.absolute_path}: {e}")
             
             self.connection = ftp
             logger.info("FTP connection established successfully")

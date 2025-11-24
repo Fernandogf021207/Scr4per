@@ -18,9 +18,10 @@ def create_app() -> FastAPI:
 
     # CORS
     _default_frontend_origins = [
-        "http://localhost:3000",
-        "http://127.0.0.1:3000",
-        "https://localhost:5173",
+        #"http://localhost:3000",
+        #"http://127.0.0.1:3000",
+        #"http://localhost:5173",
+        "https://naatintelligence.com",
     ]
     _extra_origins = [o.strip() for o in (os.getenv("FRONTEND_ORIGINS") or "").split(",") if o.strip()]
     _allowed_origins = list({*(_default_frontend_origins + _extra_origins)})
