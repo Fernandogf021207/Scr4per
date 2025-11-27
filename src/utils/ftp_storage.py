@@ -27,24 +27,34 @@ def retry_on_ftp_error(max_attempts=3, backoff=1.0):
     """
     Decorator to retry FTP operations with exponential backoff.
     
+    After max_attempts failures, raises the last exception caught.
+    
     Args:
-        max_attempts: Maximum number of retry attempts
-        backoff: Initial backoff time in seconds (doubles each retry)
+        max_attempts: Maximum number of retry attempts (default: 3)
+        backoff: Initial backoff time in seconds (doubles each retry, default: 1.0)
     """
     def decorator(func):
         @wraps(func)
         def wrapper(*args, **kwargs):
+            last_exception = None
             for attempt in range(max_attempts):
                 try:
                     return func(*args, **kwargs)
                 except Exception as e:
-                    if attempt == max_attempts - 1:
-                        logger.error(f"{func.__name__} failed after {max_attempts} attempts: {e}")
-                        raise
+                    last_exception = e
+                    is_final_attempt = (attempt == max_attempts - 1)
+                    
+                    if is_final_attempt:
+                        logger.error(f"{func.__name__} failed after {max_attempts} attempts. Final error: {e}")
+                        raise  # Re-raise the exception to stop execution
+                    
                     wait_time = backoff * (2 ** attempt)
                     logger.warning(f"{func.__name__} failed (attempt {attempt + 1}/{max_attempts}), retrying in {wait_time}s: {e}")
                     time.sleep(wait_time)
-            return None
+            
+            # This should never be reached, but just in case
+            if last_exception:
+                raise last_exception
         return wrapper
     return decorator
 
@@ -67,18 +77,18 @@ class FTPClient:
     def __init__(self):
         """Initialize FTP client with credentials from environment variables."""
         # Read configuration
-        ftp_host_raw = os.getenv('FTP_HOST', 'ftp://192.168.100.200')
+        ftp_host_raw = os.getenv('FTP_HOST')
         # Strip ftp:// protocol if present
         self.host = ftp_host_raw.replace('ftp://', '').replace('ftps://', '')
-        self.port = int(os.getenv('FTP_PORT', '21'))
-        self.username = os.getenv('FTP_USER_RO', 'ftpuser')
-        self.password = os.getenv('FTP_PASS_RO', '')
+        self.port = int(os.getenv('FTP_PORT'))
+        self.username = os.getenv('FTP_USER_RO')
+        self.password = os.getenv('FTP_PASS_RO')
         # Absolute path to navigate to after login
-        self.absolute_path = os.getenv('FTP_ABSOLUTE_PATH', 'ftp/upload')
+        self.absolute_path = os.getenv('FTP_ABSOLUTE_PATH')
         # Base path relative to absolute_path
-        self.base_path = os.getenv('FTP_BASE_PATH', 'rs')
-        self.timeout = int(os.getenv('FTP_TIMEOUT', '30'))
-        self.encoding = os.getenv('FTP_ENCODING', 'utf-8')
+        self.base_path = os.getenv('FTP_BASE_PATH')
+        self.timeout = int(os.getenv('FTP_TIMEOUT'))
+        self.encoding = os.getenv('FTP_ENCODING')
         
         self.connection: Optional[FTP] = None
         # Cache de directorios ya creados para evitar intentos repetidos
@@ -87,15 +97,24 @@ class FTPClient:
         logger.info(f"FTPClient initialized: {self.host}:{self.port}, absolute_path={self.absolute_path}, base_path={self.base_path}")
     
     def _connect(self) -> FTP:
-        """Establish FTP connection."""
+        """
+        Establish FTP connection.
+        
+        Note: This method does NOT retry. It's the caller's responsibility
+        to handle retries using the retry_on_ftp_error decorator.
+        
+        Raises:
+            ConnectionError: If connection fails
+        """
         if self.connection:
             try:
                 # Test if connection is still alive
                 self.connection.voidcmd("NOOP")
                 return self.connection
             except Exception:
-                # Connection lost, reconnect
-                self.connection = None
+                # Connection lost, close and reconnect
+                logger.debug("Existing connection lost, reconnecting...")
+                self._disconnect()
         
         try:
             logger.info(f"Connecting to FTP server {self.host}:{self.port}...")
@@ -111,12 +130,14 @@ class FTPClient:
                 logger.debug(f"Changed to working directory: {ftp.pwd()}")
             except error_perm as e:
                 logger.warning(f"Could not change to {self.absolute_path}: {e}")
+                # Don't fail here, just log the warning
             
             self.connection = ftp
             logger.info("FTP connection established successfully")
             return ftp
         except Exception as e:
             logger.error(f"Failed to connect to FTP server: {e}")
+            self.connection = None
             raise ConnectionError(f"FTP connection failed: {e}")
     
     def _disconnect(self):
@@ -241,6 +262,72 @@ class FTPClient:
         # Ensure final path is in cache
         self._created_dirs.add(path)
     
+    @retry_on_ftp_error(max_attempts=3, backoff=1.0)
+    def upload_file(self, path: str, data: bytes) -> str:
+        """
+        Upload file to specific FTP path.
+        
+        Args:
+            path: Full relative path (e.g. storage/org/user/file.json)
+            data: File content as bytes
+            
+        Returns:
+            The path used
+        """
+        # Ensure directory exists
+        dir_path = os.path.dirname(path).replace('\\', '/')
+        self._ensure_directory(dir_path)
+        
+        ftp = self._connect()
+        
+        # Ensure we're in the correct working directory
+        try:
+            current = ftp.pwd()
+            if not current.endswith(self.absolute_path):
+                ftp.cwd(self.absolute_path)
+        except:
+            pass
+            
+        bio = io.BytesIO(data)
+        
+        # Use forward slashes
+        ftp_path = path.replace('\\', '/')
+        
+        try:
+            ftp.storbinary(f'STOR {ftp_path}', bio)
+            logger.info(f"FTP upload successful: {ftp_path} ({len(data)} bytes)")
+            return ftp_path
+        except Exception as e:
+            logger.error(f"FTP upload failed for {ftp_path}: {e}")
+            raise
+
+    @retry_on_ftp_error(max_attempts=3, backoff=1.0)
+    def download_file(self, path: str) -> bytes:
+        """
+        Download file from specific FTP path.
+        
+        Args:
+            path: Full relative path
+            
+        Returns:
+            File content as bytes
+        """
+        ftp = self._connect()
+        bio = io.BytesIO()
+        
+        # Use forward slashes
+        ftp_path = path.replace('\\', '/')
+        
+        try:
+            ftp.retrbinary(f'RETR {ftp_path}', bio.write)
+            logger.info(f"FTP download successful: {ftp_path} ({bio.tell()} bytes)")
+            bio.seek(0)
+            return bio.read()
+        except error_perm as e:
+            if '550' in str(e):
+                raise FileNotFoundError(f"File not found on FTP: {ftp_path}")
+            raise
+
     @retry_on_ftp_error(max_attempts=3, backoff=1.0)
     def upload(self, platform: str, username: str, category: str, filename: str, data: bytes) -> str:
         """

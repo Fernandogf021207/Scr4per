@@ -18,9 +18,10 @@ def create_app() -> FastAPI:
 
     # CORS
     _default_frontend_origins = [
-        #"http://localhost:3000",
-        #"http://127.0.0.1:3000",
-        #"http://localhost:5173",
+        "http://localhost:3000",
+        "http://127.0.0.1:3000",
+        
+        "http://localhost:5173",
         "https://naatintelligence.com",
     ]
     _extra_origins = [o.strip() for o in (os.getenv("FRONTEND_ORIGINS") or "").split(",") if o.strip()]
@@ -52,6 +53,8 @@ def create_app() -> FastAPI:
     from .routers.export import router as export_router
     from .routers.files import router as files_router
     from .routers.multi_scrape import router as multi_scrape_router
+    from .routers.analyze import router as analyze_router
+    from .routers.targets import router as targets_router
 
     app.include_router(health_router)
     app.include_router(proxy_router)
@@ -66,6 +69,8 @@ def create_app() -> FastAPI:
     app.include_router(export_router)
     app.include_router(files_router, prefix="/files")
     app.include_router(multi_scrape_router)
+    app.include_router(analyze_router)
+    app.include_router(targets_router)
 
     return app
 

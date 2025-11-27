@@ -276,7 +276,7 @@ class XAdapter:
             pass
         return context, page
 
-    async def get_root_profile(self, username: str) -> Dict[str, Any]:
+    async def get_root_profile(self, username: str, image_base_path: Optional[str] = None) -> Dict[str, Any]:
         from src.scrapers.x.utils import obtener_nombre_usuario_x, obtener_foto_perfil_x
         context, page = await self._new_page()
         try:
@@ -294,12 +294,25 @@ class XAdapter:
             }
             if prof.get('photo_url'):
                 platform_ftp = f"red_{self.platform}"
-                prof['photo_url'] = await local_or_proxy_photo_url(prof['photo_url'], username, platform_ftp, mode='download', photo_owner=prof['username'], page=page)
+                # If image_base_path is provided, ensure it ends with / to be treated as directory
+                ftp_path = image_base_path if image_base_path else None
+                if ftp_path and not ftp_path.endswith('/'):
+                    ftp_path += '/'
+                
+                prof['photo_url'] = await local_or_proxy_photo_url(
+                    prof['photo_url'], 
+                    username, 
+                    platform_ftp, 
+                    mode='download', 
+                    photo_owner=prof['username'], 
+                    page=page,
+                    ftp_path=ftp_path
+                )
             return prof
         finally:
             await context.close()
 
-    async def _list(self, username: str, list_suffix: str) -> List[Dict[str, Any]]:
+    async def _list(self, username: str, list_suffix: str, image_base_path: Optional[str] = None) -> List[Dict[str, Any]]:
         from src.scrapers.x.scraper import extraer_usuarios_lista
         context, page = await self._new_page()
         try:
@@ -310,21 +323,35 @@ class XAdapter:
             await page.wait_for_timeout(3000)
             rows = await extraer_usuarios_lista(page, tipo_lista=list_suffix)
             platform_ftp = f"red_{self.platform}"
+            
+            # Prepare ftp_path for list items
+            ftp_path = image_base_path if image_base_path else None
+            if ftp_path and not ftp_path.endswith('/'):
+                ftp_path += '/'
+
             out: List[Dict[str, Any]] = []
             for r in rows:
                 item = _map_user_item_to_profile(self.platform, r)
                 if item.get('photo_url'):
-                    item['photo_url'] = await local_or_proxy_photo_url(item['photo_url'], username, platform_ftp, mode='download', photo_owner=item['username'], page=page)
+                    item['photo_url'] = await local_or_proxy_photo_url(
+                        item['photo_url'], 
+                        username, 
+                        platform_ftp, 
+                        mode='download', 
+                        photo_owner=item['username'], 
+                        page=page,
+                        ftp_path=ftp_path
+                    )
                 out.append(item)
             return out
         finally:
             await context.close()
 
-    async def get_followers(self, username: str, max_photos: int = 5) -> List[Dict[str, Any]]:
-        return await self._list(username, 'followers')
+    async def get_followers(self, username: str, max_photos: int = 5, image_base_path: Optional[str] = None) -> List[Dict[str, Any]]:
+        return await self._list(username, 'followers', image_base_path)
 
-    async def get_following(self, username: str, max_photos: int = 5) -> List[Dict[str, Any]]:
-        return await self._list(username, 'following')
+    async def get_following(self, username: str, max_photos: int = 5, image_base_path: Optional[str] = None) -> List[Dict[str, Any]]:
+        return await self._list(username, 'following', image_base_path)
 
     async def get_friends(self, username: str) -> List[Dict[str, Any]]:
         return []

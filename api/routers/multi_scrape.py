@@ -1,10 +1,12 @@
 from fastapi import APIRouter, HTTPException, Header
 from typing import Any, Dict
+import logging
 
 from ..schemas import MultiScrapeRequest
 from .. import services  # noqa: F401
 from ..services import multi_scrape as ms
 
+logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
@@ -25,6 +27,11 @@ async def multi_scrape(request: MultiScrapeRequest, x_tenant_id: str | None = He
         if 'STORAGE_STATE_MISSING' in detail:
             raise HTTPException(status_code=400, detail='STORAGE_STATE_MISSING')
         raise HTTPException(status_code=400, detail=detail)
-    except Exception as e:  # noqa: F841
-        # Falla no controlada en el orquestador
+    except ConnectionError as ce:
+        # Error de conexión (FTP, red, etc.)
+        logger.error(f"Connection error in multi_scrape: {ce}", exc_info=True)
+        raise HTTPException(status_code=503, detail="CONNECTION_ERROR")
+    except Exception as e:
+        # Falla no controlada en el orquestador — loguear el error completo
+        logger.exception(f"Unexpected error in multi_scrape: {e}")
         raise HTTPException(status_code=500, detail="ORCHESTRATOR_ERROR")
