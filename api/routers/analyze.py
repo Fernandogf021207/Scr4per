@@ -161,38 +161,26 @@ async def ejecutar_analisis_background(
         
         profile_id = result.get('profile_id')
         
-        # 4. Generar grafo JSON simplificado
-        # Obtener relaciones desde la BD
-        from ..repositories import upsert_profile
+        # 4. Generar grafo JSON estandarizado (Schema V2 Multi-Scrape)
         from ..deps import _schema
-        from src.utils.storage_paths import build_image_file_path
-        from src.utils.images import download_image_to_path
         
-        # Preparar parámetros de ruta para imágenes (ya tenemos path_params y persona_id)
-        path_params['persona_id'] = persona_id
-        path_params['plataforma'] = plataforma
-        path_params['username'] = username
-
-        # Descargar imagen de perfil principal (si no se descargó en scraping)
-        # El scraping ya debería haberla descargado a image_base_path si se pasó correctamente
-        # Pero mantenemos esto por seguridad o para asegurar el nombre correcto
-        root_profile = result.get('profile', {})
-        if root_profile.get('photo_url'):
-            # Si la URL ya es del FTP (empieza con image_base_path o similar), no hacemos nada
-            # Si es remota, la descargamos
-            pass 
-            # Ya no necesitamos descargar explícitamente si el scraper lo hizo
-            # Pero si el scraper falló o no lo hizo, esto es un fallback
-            # Sin embargo, build_image_file_path usa filename.
-            # Si el scraper usó un filename diferente, podríamos duplicar.
-            # Asumimos que el scraper usó _safe_filename(username) + ext.
+        # Estructuras para el grafo
+        profiles_map = {}
+        relations_list = []
+        root_id = f"{plataforma}:{username}"
+        
+        # 4.1 Agregar perfil root
+        root_prof_data = result.get('profile', {})
+        # Asegurar campos mínimos
+        if not root_prof_data.get('username'):
+            root_prof_data['username'] = username
+        if not root_prof_data.get('platform'):
+            root_prof_data['platform'] = plataforma
             
-            # Dejamos el código existente de descarga como fallback, pero usamos image_base_path
-            # img_path = build_image_file_path(...)
-            # await download_image_to_path(root_profile['photo_url'], img_path)
-            pass
+        root_prof_data['sources'] = [root_id]
+        profiles_map[(plataforma, username)] = root_prof_data
 
-        relationships = []
+        # 4.2 Obtener relaciones y perfiles relacionados desde BD
         with conn.cursor() as cur:
             schema = _schema(plataforma)
             cur.execute(f"""
@@ -200,60 +188,74 @@ async def ejecutar_analisis_background(
                     r.rel_type,
                     p_related.username as related_username,
                     p_related.full_name,
+                    p_related.profile_url,
                     p_related.photo_url
                 FROM {schema}.relationships r
                 JOIN {schema}.profiles p_owner ON r.owner_profile_id = p_owner.id
                 JOIN {schema}.profiles p_related ON r.related_profile_id = p_related.id
                 WHERE p_owner.username = %s
-                LIMIT 100
+                LIMIT 500
             """, (username,))
             
             for row in cur.fetchall():
                 rel_username = row['related_username']
-                rel_photo = row['photo_url']
+                rel_type = row['rel_type']
                 
-                # Descargar imagen del relacionado
-                if rel_photo:
-                    try:
-                        rel_img_path = build_image_file_path(
-                            filename=f"{rel_username}.jpg",
-                            **path_params
-                        )
-                        # No esperamos (fire and forget) o esperamos? 
-                        # Mejor esperamos para asegurar que estén al terminar
-                        await download_image_to_path(rel_photo, rel_img_path)
-                    except Exception as e:
-                        logger.warning(f"Error descargando imagen de {rel_username}: {e}")
-
-                relationships.append({
-                    "type": row['rel_type'],
-                    "username": rel_username,
-                    "full_name": row['full_name']
+                # Agregar relación
+                relations_list.append({
+                    "platform": plataforma,
+                    "source": username,
+                    "target": rel_username,
+                    "type": rel_type
                 })
+                
+                # Agregar perfil relacionado
+                rel_key = (plataforma, rel_username)
+                if rel_key not in profiles_map:
+                    profiles_map[rel_key] = {
+                        "platform": plataforma,
+                        "username": rel_username,
+                        "full_name": row['full_name'],
+                        "profile_url": row['profile_url'],
+                        "photo_url": row['photo_url'],
+                        "sources": [root_id]
+                    }
+                else:
+                    if root_id not in profiles_map[rel_key].get('sources', []):
+                         profiles_map[rel_key]['sources'].append(root_id)
         
+        # 4.3 Construir objeto final
         grafo_data = {
             "schema_version": 2,
-            "platform": plataforma,
-            "root_username": username,
-            "profile": result.get('profile', {}),
-            "relationships": relationships,
-            "metadata": {
-                "id_identidad": id_identidad,
-                "id_caso": context.get('id_caso'),
-                "id_persona": 1,  # TODO: obtener desde context o BD
-                "analizado_por": context.get('id_usuario'),
-                "fecha_analisis": datetime.now().isoformat()
+            "root_profiles": [root_id],
+            "profiles": list(profiles_map.values()),
+            "relations": relations_list,
+            "warnings": [],
+            "meta": {
+                "schema_version": 2,
+                "generated_at": datetime.now().isoformat(),
+                "roots_processed": 1,
+                "context": {
+                    "id_identidad": id_identidad,
+                    "id_caso": context.get('id_caso'),
+                    "analizado_por": context.get('id_usuario')
+                }
             }
         }
         
         grafo_json = json.dumps(grafo_data, ensure_ascii=False, indent=2)
         
-        ruta_grafo = build_graph_file_path(**path_params)
+        ruta_grafo = build_graph_file_path(
+            **path_params,
+            persona_id=persona_id,
+            plataforma=plataforma,
+            username=username
+        )
         ruta_evidencia = build_evidence_path(
             organizacion=path_params['organizacion'],
             usuario_id=path_params['usuario_id'],
             caso_id=path_params['caso_id'],
-            persona_id=path_params['persona_id'],
+            persona_id=persona_id,
             plataforma=plataforma,
             area=path_params.get('area'),
             departamento=path_params.get('departamento')

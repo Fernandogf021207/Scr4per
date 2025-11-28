@@ -109,7 +109,7 @@ class InstagramAdapter:
         finally:
             await context.close()
 
-    async def get_followers(self, username: str, max_photos: int = 5) -> List[Dict[str, Any]]:
+    async def get_followers(self, username: str, max_photos: int = 5, image_base_path: Optional[str] = None) -> List[Dict[str, Any]]:
         from src.scrapers.instagram.scraper import scrap_seguidores
         context, page = await self._new_page()
         try:
@@ -117,17 +117,41 @@ class InstagramAdapter:
             perfil_url = _profile_url(self.platform, username)
             rows = await scrap_seguidores(page, perfil_url, username)
             platform_ftp = f"red_{self.platform}"
+            
+            # Prepare ftp_path
+            ftp_path = image_base_path if image_base_path else None
+            if ftp_path and not ftp_path.endswith('/'):
+                ftp_path += '/'
+
             out: List[Dict[str, Any]] = []
             for r in rows:
                 item = _map_user_item_to_profile(self.platform, r)
-                if item.get('photo_url'):
-                    item['photo_url'] = await local_or_proxy_photo_url(item['photo_url'], username, platform_ftp, mode='download', photo_owner=item['username'], page=page)
                 out.append(item)
+            
+            import asyncio
+            async def process_image(item):
+                if item.get('photo_url'):
+                    try:
+                        item['photo_url'] = await local_or_proxy_photo_url(
+                            item['photo_url'], 
+                            username, 
+                            platform_ftp, 
+                            mode='download', 
+                            photo_owner=item['username'], 
+                            page=page,
+                            ftp_path=ftp_path
+                        )
+                    except Exception:
+                        pass
+            
+            if out:
+                await asyncio.gather(*(process_image(item) for item in out))
+
             return out
         finally:
             await context.close()
 
-    async def get_following(self, username: str, max_photos: int = 5) -> List[Dict[str, Any]]:
+    async def get_following(self, username: str, max_photos: int = 5, image_base_path: Optional[str] = None) -> List[Dict[str, Any]]:
         from src.scrapers.instagram.scraper import scrap_seguidos
         context, page = await self._new_page()
         try:
@@ -135,12 +159,36 @@ class InstagramAdapter:
             perfil_url = _profile_url(self.platform, username)
             rows = await scrap_seguidos(page, perfil_url, username)
             platform_ftp = f"red_{self.platform}"
+            
+            # Prepare ftp_path
+            ftp_path = image_base_path if image_base_path else None
+            if ftp_path and not ftp_path.endswith('/'):
+                ftp_path += '/'
+
             out: List[Dict[str, Any]] = []
             for r in rows:
                 item = _map_user_item_to_profile(self.platform, r)
-                if item.get('photo_url'):
-                    item['photo_url'] = await local_or_proxy_photo_url(item['photo_url'], username, platform_ftp, mode='download', photo_owner=item['username'], page=page)
                 out.append(item)
+            
+            import asyncio
+            async def process_image(item):
+                if item.get('photo_url'):
+                    try:
+                        item['photo_url'] = await local_or_proxy_photo_url(
+                            item['photo_url'], 
+                            username, 
+                            platform_ftp, 
+                            mode='download', 
+                            photo_owner=item['username'], 
+                            page=page,
+                            ftp_path=ftp_path
+                        )
+                    except Exception:
+                        pass
+            
+            if out:
+                await asyncio.gather(*(process_image(item) for item in out))
+
             return out
         finally:
             await context.close()
@@ -186,7 +234,7 @@ class FacebookAdapter:
         finally:
             await context.close()
 
-    async def _list(self, username: str, lista: str) -> List[Dict[str, Any]]:
+    async def _list(self, username: str, lista: str, image_base_path: Optional[str] = None) -> List[Dict[str, Any]]:
         from src.scrapers.facebook.scraper import navegar_a_lista, extraer_usuarios_listado
         context, page = await self._new_page()
         try:
@@ -197,26 +245,50 @@ class FacebookAdapter:
                 return []
             rows = await extraer_usuarios_listado(page, lista, username)
             platform_ftp = f"red_{self.platform}"
+            
+            # Prepare ftp_path
+            ftp_path = image_base_path if image_base_path else None
+            if ftp_path and not ftp_path.endswith('/'):
+                ftp_path += '/'
+
             out: List[Dict[str, Any]] = []
             for r in rows:
                 item = _map_user_item_to_profile(self.platform, r)
-                if item.get('photo_url'):
-                    item['photo_url'] = await local_or_proxy_photo_url(item['photo_url'], username, platform_ftp, mode='download', photo_owner=item['username'], page=page)
                 out.append(item)
+            
+            import asyncio
+            async def process_image(item):
+                if item.get('photo_url'):
+                    try:
+                        item['photo_url'] = await local_or_proxy_photo_url(
+                            item['photo_url'], 
+                            username, 
+                            platform_ftp, 
+                            mode='download', 
+                            photo_owner=item['username'], 
+                            page=page,
+                            ftp_path=ftp_path
+                        )
+                    except Exception:
+                        pass
+            
+            if out:
+                await asyncio.gather(*(process_image(item) for item in out))
+
             return out
         finally:
             await context.close()
 
-    async def get_followers(self, username: str, max_photos: int = 5) -> List[Dict[str, Any]]:
-        return await self._list(username, 'followers')
+    async def get_followers(self, username: str, max_photos: int = 5, image_base_path: Optional[str] = None) -> List[Dict[str, Any]]:
+        return await self._list(username, 'followers', image_base_path)
 
-    async def get_following(self, username: str, max_photos: int = 5) -> List[Dict[str, Any]]:
-        return await self._list(username, 'followed')
+    async def get_following(self, username: str, max_photos: int = 5, image_base_path: Optional[str] = None) -> List[Dict[str, Any]]:
+        return await self._list(username, 'followed', image_base_path)
 
     async def get_friends(self, username: str) -> List[Dict[str, Any]]:
         return await self._list(username, 'friends_all')
 
-    async def get_photo_reactors(self, username: str, max_photos: int = 5, include_comment_reactions: bool = False) -> List[Dict[str, Any]]:
+    async def get_photo_reactors(self, username: str, max_photos: int = 5, include_comment_reactions: bool = False, image_base_path: Optional[str] = None) -> List[Dict[str, Any]]:
         """Devuelve perfiles que reaccionaron a las últimas fotos públicas del usuario.
         Nota: La relación en orquestador será 'reacted'.
         """
@@ -227,17 +299,41 @@ class FacebookAdapter:
             perfil_url = _profile_url(self.platform, username)
             rows = await scrap_reacciones_fotos(page, perfil_url, username, max_fotos=max_photos, incluir_comentarios=include_comment_reactions)
             platform_ftp = f"red_{self.platform}"
+            
+            # Prepare ftp_path
+            ftp_path = image_base_path if image_base_path else None
+            if ftp_path and not ftp_path.endswith('/'):
+                ftp_path += '/'
+
             out: List[Dict[str, Any]] = []
             for r in rows:
                 item = _map_user_item_to_profile(self.platform, r)
-                if item.get('photo_url'):
-                    item['photo_url'] = await local_or_proxy_photo_url(item['photo_url'], username, platform_ftp, mode='download', photo_owner=item['username'], page=page)
                 out.append(item)
+            
+            import asyncio
+            async def process_image(item):
+                if item.get('photo_url'):
+                    try:
+                        item['photo_url'] = await local_or_proxy_photo_url(
+                            item['photo_url'], 
+                            username, 
+                            platform_ftp, 
+                            mode='download', 
+                            photo_owner=item['username'], 
+                            page=page,
+                            ftp_path=ftp_path
+                        )
+                    except Exception:
+                        pass
+            
+            if out:
+                await asyncio.gather(*(process_image(item) for item in out))
+
             return out
         finally:
             await context.close()
 
-    async def get_photo_commenters(self, username: str, max_photos: int = 5) -> List[Dict[str, Any]]:
+    async def get_photo_commenters(self, username: str, max_photos: int = 5, image_base_path: Optional[str] = None) -> List[Dict[str, Any]]:
         """Devuelve perfiles que comentaron en las últimas fotos públicas del usuario.
         Nota: La relación en orquestador será 'commented'.
         """
@@ -248,12 +344,36 @@ class FacebookAdapter:
             perfil_url = _profile_url(self.platform, username)
             rows = await scrap_comentarios_fotos(page, perfil_url, username, max_fotos=max_photos)
             platform_ftp = f"red_{self.platform}"
+            
+            # Prepare ftp_path
+            ftp_path = image_base_path if image_base_path else None
+            if ftp_path and not ftp_path.endswith('/'):
+                ftp_path += '/'
+
             out: List[Dict[str, Any]] = []
             for r in rows:
                 item = _map_user_item_to_profile(self.platform, r)
-                if item.get('photo_url'):
-                    item['photo_url'] = await local_or_proxy_photo_url(item['photo_url'], username, platform_ftp, mode='download', photo_owner=item['username'], page=page)
                 out.append(item)
+            
+            import asyncio
+            async def process_image(item):
+                if item.get('photo_url'):
+                    try:
+                        item['photo_url'] = await local_or_proxy_photo_url(
+                            item['photo_url'], 
+                            username, 
+                            platform_ftp, 
+                            mode='download', 
+                            photo_owner=item['username'], 
+                            page=page,
+                            ftp_path=ftp_path
+                        )
+                    except Exception:
+                        pass
+            
+            if out:
+                await asyncio.gather(*(process_image(item) for item in out))
+
             return out
         finally:
             await context.close()
@@ -332,17 +452,29 @@ class XAdapter:
             out: List[Dict[str, Any]] = []
             for r in rows:
                 item = _map_user_item_to_profile(self.platform, r)
-                if item.get('photo_url'):
-                    item['photo_url'] = await local_or_proxy_photo_url(
-                        item['photo_url'], 
-                        username, 
-                        platform_ftp, 
-                        mode='download', 
-                        photo_owner=item['username'], 
-                        page=page,
-                        ftp_path=ftp_path
-                    )
                 out.append(item)
+            
+            # Process images in parallel
+            import asyncio
+            
+            async def process_image(profile_item):
+                if profile_item.get('photo_url'):
+                    try:
+                        profile_item['photo_url'] = await local_or_proxy_photo_url(
+                            profile_item['photo_url'], 
+                            username, 
+                            platform_ftp, 
+                            mode='download', 
+                            photo_owner=profile_item['username'], 
+                            page=page,
+                            ftp_path=ftp_path
+                        )
+                    except Exception as e:
+                        logger.warning(f"Failed to process image for {profile_item.get('username')}: {e}")
+
+            if out:
+                await asyncio.gather(*(process_image(item) for item in out))
+
             return out
         finally:
             await context.close()

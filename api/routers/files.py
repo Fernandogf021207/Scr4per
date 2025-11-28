@@ -93,3 +93,48 @@ async def serve_scraped_image(platform: str, username: str, filename: str):
     except Exception as e:
         logger.error(f"Error serving image from FTP: {e}")
         raise HTTPException(status_code=500, detail=f"Error retrieving image: {str(e)}")
+
+
+@router.get("/scraped-image-path/{file_path:path}")
+async def serve_scraped_image_by_path(file_path: str):
+    """
+    Serve images from FTP storage using full path.
+    Path format: /files/scraped-image-path/{full_ftp_path}
+    """
+    try:
+        ftp = get_ftp_client()
+        
+        # Download file from FTP into memory
+        # Note: download_file takes the full relative path
+        file_data = ftp.download_file(file_path)
+        
+        if not file_data:
+            raise HTTPException(status_code=404, detail="Image not found")
+        
+        # Determine content type from extension
+        filename = os.path.basename(file_path)
+        ext = os.path.splitext(filename)[1].lower()
+        content_type_map = {
+            '.jpg': 'image/jpeg',
+            '.jpeg': 'image/jpeg',
+            '.png': 'image/png',
+            '.gif': 'image/gif',
+            '.webp': 'image/webp',
+            '.bmp': 'image/bmp',
+        }
+        content_type = content_type_map.get(ext, 'image/jpeg')
+        
+        # Return as streaming response with cache headers
+        return StreamingResponse(
+            BytesIO(file_data),
+            media_type=content_type,
+            headers={
+                "Cache-Control": "public, max-age=86400",  # Cache for 24 hours
+                "Content-Disposition": f'inline; filename="{filename}"'
+            }
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error serving image from FTP path {file_path}: {e}")
+        raise HTTPException(status_code=500, detail=f"Error retrieving image: {str(e)}")
