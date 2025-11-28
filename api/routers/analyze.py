@@ -6,12 +6,15 @@ Este módulo maneja el ciclo de vida completo del análisis:
 2. Consultar estado del análisis
 3. Obtener resultados (grafo JSON desde FTP)
 """
-from typing import Optional
+from typing import Optional, List
 from fastapi import APIRouter, HTTPException, BackgroundTasks
+import asyncio
 from ..schemas import (
     AnalysisRequest,
     AnalysisStatusResponse,
-    IdentidadDigitalOut
+    IdentidadDigitalOut,
+    BatchAnalysisRequest,
+    BatchAnalysisResponse
 )
 from ..db import get_conn
 import logging
@@ -19,10 +22,32 @@ import logging
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/analyze", tags=["analyze"])
 
+# Semáforo global para limitar concurrencia de navegadores
+GLOBAL_SEMAPHORE = asyncio.Semaphore(3)
+
 
 # ==================================================================
 # REPOSITORY FUNCTIONS (Acceso a BD)
 # ==================================================================
+
+def get_identidades_por_personas(conn, personas_ids: List[int]) -> List[dict]:
+    """Obtiene todas las identidades digitales de una lista de personas."""
+    if not personas_ids:
+        return []
+    with conn.cursor() as cur:
+        cur.execute("""
+            SELECT 
+                id_identidad,
+                id_persona,
+                plataforma,
+                usuario_o_url,
+                estado,
+                ultimo_analisis
+            FROM entidades.identidades_digitales
+            WHERE id_persona = ANY(%s)
+        """, (personas_ids,))
+        return cur.fetchall()
+
 
 def get_identidad_digital(conn, id_identidad: int) -> Optional[dict]:
     """Obtiene una identidad digital por ID."""
@@ -420,9 +445,92 @@ async def _scrape_single_profile(platform: str, username: str, max_photos: int, 
             conn.close()
 
 
+async def ejecutar_analisis_con_semaforo(
+    id_identidad: int,
+    plataforma: str,
+    usuario_o_url: str,
+    context: dict,
+    max_photos: int,
+    headless: bool,
+    max_depth: int
+):
+    """Wrapper que ejecuta el análisis respetando el semáforo global."""
+    async with GLOBAL_SEMAPHORE:
+        logger.info(f"Semaforo adquirido para identidad {id_identidad}")
+        await ejecutar_analisis_background(
+            id_identidad, plataforma, usuario_o_url, context, max_photos, headless, max_depth
+        )
+        logger.info(f"Semaforo liberado para identidad {id_identidad}")
+
+
 # ==================================================================
 # ENDPOINTS
 # ==================================================================
+
+@router.post("/batch", response_model=BatchAnalysisResponse)
+async def start_batch_analysis_by_persons(
+    request: BatchAnalysisRequest, 
+    background_tasks: BackgroundTasks
+):
+    """
+    Inicia el análisis en lote para una lista de personas.
+    Busca todas las identidades digitales asociadas y las encola para análisis.
+    """
+    conn = get_conn()
+    try:
+        # 1. Obtener todas las identidades de las personas solicitadas
+        identidades = get_identidades_por_personas(conn, request.personas_ids)
+        
+        iniciadas = []
+        omitidas = []
+        
+        from datetime import datetime, timedelta
+        
+        for ident in identidades:
+            id_identidad = ident['id_identidad']
+            estado = ident['estado']
+            ultimo_analisis = ident['ultimo_analisis']
+            
+            # Lógica de filtrado (similar a start_analysis individual)
+            should_process = True
+            if estado == 'procesando':
+                if ultimo_analisis:
+                    tiempo_transcurrido = datetime.now(ultimo_analisis.tzinfo) - ultimo_analisis
+                    if tiempo_transcurrido < timedelta(minutes=10):
+                        should_process = False
+                else:
+                    should_process = False
+            
+            if should_process:
+                # Actualizar estado a procesando inmediatamente
+                update_identidad_estado(conn, id_identidad, 'procesando')
+                
+                # Encolar tarea con semáforo
+                background_tasks.add_task(
+                    ejecutar_analisis_con_semaforo,
+                    id_identidad=id_identidad,
+                    plataforma=ident['plataforma'],
+                    usuario_o_url=ident['usuario_o_url'],
+                    context=request.context.dict(),
+                    max_photos=request.max_photos,
+                    headless=request.headless,
+                    max_depth=request.max_depth
+                )
+                iniciadas.append(id_identidad)
+            else:
+                omitidas.append(id_identidad)
+        
+        return BatchAnalysisResponse(
+            mensaje="Proceso de análisis en lote iniciado",
+            total_identidades_encontradas=len(identidades),
+            identidades_iniciadas=iniciadas,
+            identidades_omitidas=omitidas,
+            detalle=f"Se iniciaron {len(iniciadas)} análisis. {len(omitidas)} omitidos por estar ya en proceso."
+        )
+        
+    finally:
+        conn.close()
+
 
 @router.post("/start", response_model=AnalysisStatusResponse)
 async def start_analysis(request: AnalysisRequest, background_tasks: BackgroundTasks):

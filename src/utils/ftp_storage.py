@@ -93,6 +93,8 @@ class FTPClient:
         self.connection: Optional[FTP] = None
         # Cache de directorios ya creados para evitar intentos repetidos
         self._created_dirs: set = set()
+        # Cache de archivos ya subidos para evitar subidas redundantes
+        self._uploaded_files: set = set()
         
         logger.info(f"FTPClient initialized: {self.host}:{self.port}, absolute_path={self.absolute_path}, base_path={self.base_path}")
     
@@ -274,6 +276,14 @@ class FTPClient:
         Returns:
             The path used
         """
+        # Use forward slashes
+        ftp_path = path.replace('\\', '/')
+        
+        # Check cache first
+        if ftp_path in self._uploaded_files:
+            logger.debug(f"Skipping upload, file already exists in cache: {ftp_path}")
+            return ftp_path
+
         # Ensure directory exists
         dir_path = os.path.dirname(path).replace('\\', '/')
         self._ensure_directory(dir_path)
@@ -290,12 +300,10 @@ class FTPClient:
             
         bio = io.BytesIO(data)
         
-        # Use forward slashes
-        ftp_path = path.replace('\\', '/')
-        
         try:
             ftp.storbinary(f'STOR {ftp_path}', bio)
             logger.info(f"FTP upload successful: {ftp_path} ({len(data)} bytes)")
+            self._uploaded_files.add(ftp_path)
             return ftp_path
         except Exception as e:
             logger.error(f"FTP upload failed for {ftp_path}: {e}")
@@ -348,6 +356,14 @@ class FTPClient:
             ConnectionError: If FTP operation fails
         """
         file_path = self._build_path(platform, username, category, filename)
+        
+        # Check cache first
+        if file_path in self._uploaded_files:
+            logger.debug(f"Skipping upload, file already exists in cache: {file_path}")
+            # Return relative path for DB storage (without base_path)
+            relative_path = f"{platform}/{username}/{category}/{filename}"
+            return relative_path
+
         dir_path = self._build_path(platform, username, category)
         
         # Ensure directory exists
@@ -370,6 +386,7 @@ class FTPClient:
         try:
             ftp.storbinary(f'STOR {file_path}', bio)
             logger.info(f"FTP upload successful: {file_path} ({len(data)} bytes)")
+            self._uploaded_files.add(file_path)
         except Exception as e:
             logger.error(f"FTP upload failed for {file_path}: {e}")
             raise

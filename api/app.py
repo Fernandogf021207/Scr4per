@@ -73,6 +73,8 @@ app = FastAPI(title="Scr4per DB API", version="0.1.0")
 _default_frontend_origins = [
     "http://localhost:3000",
     "http://127.0.0.1:3000",
+    "http://localhost:5173",
+    "https://naatintelligence.com",
 ]
 # Optional: extend via env FRONTEND_ORIGINS as comma-separated URLs
 _extra_origins = [o.strip() for o in (os.getenv("FRONTEND_ORIGINS") or "").split(",") if o.strip()]

@@ -1,0 +1,711 @@
+{
+  "schema_version": 2,
+  "root_profiles": [
+    "x:jvgador9"
+  ],
+  "profiles": [
+    {
+      "platform": "x",
+      "username": "jvgador9",
+      "full_name": "esaú",
+      "profile_url": "https://x.com/jvgador9",
+      "photo_url": "redes_sociales/fiscalia/inteligencia/cibernetica/1/100/1/x/images/jvgador9.jpg",
+      "sources": [
+        "x:jvgador9"
+      ]
+    },
+    {
+      "platform": "x",
+      "username": "ximmj_",
+      "full_name": "ximmj_",
+      "profile_url": "https://x.com/ximmj_",
+      "photo_url": "redes_sociales/fiscalia/inteligencia/cibernetica/1/100/1/x/images/ximmj_.jpg",
+      "sources": [
+        "x:jvgador9"
+      ]
+    },
+    {
+      "platform": "x",
+      "username": "itsvariann",
+      "full_name": "itsvariann",
+      "profile_url": "https://x.com/itsvariann",
+      "photo_url": "redes_sociales/fiscalia/inteligencia/cibernetica/1/100/1/x/images/itsvariann.jpg",
+      "sources": [
+        "x:jvgador9"
+      ]
+    },
+    {
+      "platform": "x",
+      "username": "Emergenteqro",
+      "full_name": "Emergenteqro",
+      "profile_url": "https://x.com/Emergenteqro",
+      "photo_url": "redes_sociales/fiscalia/inteligencia/cibernetica/1/100/1/x/images/Emergenteqro.jpg",
+      "sources": [
+        "x:jvgador9"
+      ]
+    },
+    {
+      "platform": "x",
+      "username": "its_josssss",
+      "full_name": "its_josssss",
+      "profile_url": "https://x.com/its_josssss",
+      "photo_url": "redes_sociales/fiscalia/inteligencia/cibernetica/1/100/1/x/images/its_josssss.jpg",
+      "sources": [
+        "x:jvgador9"
+      ]
+    },
+    {
+      "platform": "x",
+      "username": "artemisia56",
+      "full_name": "artemisia56",
+      "profile_url": "https://x.com/artemisia56",
+      "photo_url": "redes_sociales/fiscalia/inteligencia/cibernetica/1/100/1/x/images/artemisia56.jpg",
+      "sources": [
+        "x:jvgador9"
+      ]
+    },
+    {
+      "platform": "x",
+      "username": "Alex_fxrnxndxz",
+      "full_name": "Alex_fxrnxndxz",
+      "profile_url": "https://x.com/Alex_fxrnxndxz",
+      "photo_url": "redes_sociales/fiscalia/inteligencia/cibernetica/1/100/1/x/images/Alex_fxrnxndxz.jpg",
+      "sources": [
+        "x:jvgador9"
+      ]
+    },
+    {
+      "platform": "x",
+      "username": "condena",
+      "full_name": "condena",
+      "profile_url": "https://x.com/condena",
+      "photo_url": "redes_sociales/fiscalia/inteligencia/cibernetica/1/100/1/x/images/condena.jpg",
+      "sources": [
+        "x:jvgador9"
+      ]
+    },
+    {
+      "platform": "x",
+      "username": "JairSil88002328",
+      "full_name": "JairSil88002328",
+      "profile_url": "https://x.com/JairSil88002328",
+      "photo_url": "redes_sociales/fiscalia/inteligencia/cibernetica/1/100/1/x/images/JairSil88002328.jpg",
+      "sources": [
+        "x:jvgador9"
+      ]
+    },
+    {
+      "platform": "x",
+      "username": "furitriste",
+      "full_name": "furitriste",
+      "profile_url": "https://x.com/furitriste",
+      "photo_url": "redes_sociales/fiscalia/inteligencia/cibernetica/1/100/1/x/images/furitriste.jpg",
+      "sources": [
+        "x:jvgador9"
+      ]
+    },
+    {
+      "platform": "x",
+      "username": "ElTonyeishon",
+      "full_name": "ElTonyeishon",
+      "profile_url": "https://x.com/ElTonyeishon",
+      "photo_url": "redes_sociales/fiscalia/inteligencia/cibernetica/1/100/1/x/images/ElTonyeishon.jpg",
+      "sources": [
+        "x:jvgador9"
+      ]
+    },
+    {
+      "platform": "x",
+      "username": "mikelovinroll",
+      "full_name": "mikelovinroll",
+      "profile_url": "https://x.com/mikelovinroll",
+      "photo_url": "redes_sociales/fiscalia/inteligencia/cibernetica/1/100/1/x/images/mikelovinroll.jpg",
+      "sources": [
+        "x:jvgador9"
+      ]
+    },
+    {
+      "platform": "x",
+      "username": "MarcoMayoral4",
+      "full_name": "MarcoMayoral4",
+      "profile_url": "https://x.com/MarcoMayoral4",
+      "photo_url": "redes_sociales/fiscalia/inteligencia/cibernetica/1/100/1/x/images/MarcoMayoral4.jpg",
+      "sources": [
+        "x:jvgador9"
+      ]
+    },
+    {
+      "platform": "x",
+      "username": "saaamvaz",
+      "full_name": "saaamvaz",
+      "profile_url": "https://x.com/saaamvaz",
+      "photo_url": "redes_sociales/fiscalia/inteligencia/cibernetica/1/100/1/x/images/saaamvaz.jpg",
+      "sources": [
+        "x:jvgador9"
+      ]
+    },
+    {
+      "platform": "x",
+      "username": "Urinaaal",
+      "full_name": "Urinaaal",
+      "profile_url": "https://x.com/Urinaaal",
+      "photo_url": "redes_sociales/fiscalia/inteligencia/cibernetica/1/100/1/x/images/Urinaaal.jpg",
+      "sources": [
+        "x:jvgador9"
+      ]
+    },
+    {
+      "platform": "x",
+      "username": "Uziel25435861",
+      "full_name": "Uziel25435861",
+      "profile_url": "https://x.com/Uziel25435861",
+      "photo_url": "redes_sociales/fiscalia/inteligencia/cibernetica/1/100/1/x/images/Uziel25435861.jpg",
+      "sources": [
+        "x:jvgador9"
+      ]
+    },
+    {
+      "platform": "x",
+      "username": "nolislas",
+      "full_name": "nolislas",
+      "profile_url": "https://x.com/nolislas",
+      "photo_url": "redes_sociales/fiscalia/inteligencia/cibernetica/1/100/1/x/images/nolislas.jpg",
+      "sources": [
+        "x:jvgador9"
+      ]
+    },
+    {
+      "platform": "x",
+      "username": "andy_melgarejoo",
+      "full_name": "andy_melgarejoo",
+      "profile_url": "https://x.com/andy_melgarejoo",
+      "photo_url": "redes_sociales/fiscalia/inteligencia/cibernetica/1/100/1/x/images/andy_melgarejoo.jpg",
+      "sources": [
+        "x:jvgador9"
+      ]
+    },
+    {
+      "platform": "x",
+      "username": "eduardoRbarquer",
+      "full_name": "eduardoRbarquer",
+      "profile_url": "https://x.com/eduardoRbarquer",
+      "photo_url": "redes_sociales/fiscalia/inteligencia/cibernetica/1/100/1/x/images/eduardoRbarquer.jpg",
+      "sources": [
+        "x:jvgador9"
+      ]
+    },
+    {
+      "platform": "x",
+      "username": "tuff_samurai",
+      "full_name": "tuff_samurai",
+      "profile_url": "https://x.com/tuff_samurai",
+      "photo_url": "redes_sociales/fiscalia/inteligencia/cibernetica/1/100/1/x/images/tuff_samurai.jpg",
+      "sources": [
+        "x:jvgador9"
+      ]
+    },
+    {
+      "platform": "x",
+      "username": "abbiesmo",
+      "full_name": "abbiesmo",
+      "profile_url": "https://x.com/abbiesmo",
+      "photo_url": "redes_sociales/fiscalia/inteligencia/cibernetica/1/100/1/x/images/abbiesmo.jpg",
+      "sources": [
+        "x:jvgador9"
+      ]
+    },
+    {
+      "platform": "x",
+      "username": "EseWey_21",
+      "full_name": "EseWey_21",
+      "profile_url": "https://x.com/EseWey_21",
+      "photo_url": "redes_sociales/fiscalia/inteligencia/cibernetica/1/100/1/x/images/EseWey_21.jpg",
+      "sources": [
+        "x:jvgador9"
+      ]
+    },
+    {
+      "platform": "x",
+      "username": "Eh432346",
+      "full_name": "Eh432346",
+      "profile_url": "https://x.com/Eh432346",
+      "photo_url": "redes_sociales/fiscalia/inteligencia/cibernetica/1/100/1/x/images/Eh432346.jpg",
+      "sources": [
+        "x:jvgador9"
+      ]
+    },
+    {
+      "platform": "x",
+      "username": "Pitufi_Anzures",
+      "full_name": "Pitufi_Anzures",
+      "profile_url": "https://x.com/Pitufi_Anzures",
+      "photo_url": "redes_sociales/fiscalia/inteligencia/cibernetica/1/100/1/x/images/Pitufi_Anzures.jpg",
+      "sources": [
+        "x:jvgador9"
+      ]
+    },
+    {
+      "platform": "x",
+      "username": "JmMawui",
+      "full_name": "JmMawui",
+      "profile_url": "https://x.com/JmMawui",
+      "photo_url": "redes_sociales/fiscalia/inteligencia/cibernetica/1/100/1/x/images/JmMawui.jpg",
+      "sources": [
+        "x:jvgador9"
+      ]
+    },
+    {
+      "platform": "x",
+      "username": "blueethoughtsss",
+      "full_name": "blueethoughtsss",
+      "profile_url": "https://x.com/blueethoughtsss",
+      "photo_url": "redes_sociales/fiscalia/inteligencia/cibernetica/1/100/1/x/images/blueethoughtsss.jpg",
+      "sources": [
+        "x:jvgador9"
+      ]
+    },
+    {
+      "platform": "x",
+      "username": "Yerrix3",
+      "full_name": "Yerrix3",
+      "profile_url": "https://x.com/Yerrix3",
+      "photo_url": "redes_sociales/fiscalia/inteligencia/cibernetica/1/100/1/x/images/Yerrix3.jpg",
+      "sources": [
+        "x:jvgador9"
+      ]
+    },
+    {
+      "platform": "x",
+      "username": "Dieg0_cam",
+      "full_name": "Dieg0_cam",
+      "profile_url": "https://x.com/Dieg0_cam",
+      "photo_url": "redes_sociales/fiscalia/inteligencia/cibernetica/1/100/1/x/images/Dieg0_cam.jpg",
+      "sources": [
+        "x:jvgador9"
+      ]
+    },
+    {
+      "platform": "x",
+      "username": "CunaDeVersos",
+      "full_name": "CunaDeVersos",
+      "profile_url": "https://x.com/CunaDeVersos",
+      "photo_url": "redes_sociales/fiscalia/inteligencia/cibernetica/1/100/1/x/images/CunaDeVersos.jpg",
+      "sources": [
+        "x:jvgador9"
+      ]
+    },
+    {
+      "platform": "x",
+      "username": "Lalo_Guerrero09",
+      "full_name": "Lalo_Guerrero09",
+      "profile_url": "https://x.com/Lalo_Guerrero09",
+      "photo_url": "redes_sociales/fiscalia/inteligencia/cibernetica/1/100/1/x/images/Lalo_Guerrero09.jpg",
+      "sources": [
+        "x:jvgador9"
+      ]
+    },
+    {
+      "platform": "x",
+      "username": "pitufimai",
+      "full_name": "pitufimai",
+      "profile_url": "https://x.com/pitufimai",
+      "photo_url": "redes_sociales/fiscalia/inteligencia/cibernetica/1/100/1/x/images/pitufimai.jpg",
+      "sources": [
+        "x:jvgador9"
+      ]
+    },
+    {
+      "platform": "x",
+      "username": "Isaac33593102",
+      "full_name": "Isaac33593102",
+      "profile_url": "https://x.com/Isaac33593102",
+      "photo_url": "redes_sociales/fiscalia/inteligencia/cibernetica/1/100/1/x/images/Isaac33593102.jpg",
+      "sources": [
+        "x:jvgador9"
+      ]
+    },
+    {
+      "platform": "x",
+      "username": "vhca123",
+      "full_name": "vhca123",
+      "profile_url": "https://x.com/vhca123",
+      "photo_url": "redes_sociales/fiscalia/inteligencia/cibernetica/1/100/1/x/images/vhca123.jpg",
+      "sources": [
+        "x:jvgador9"
+      ]
+    },
+    {
+      "platform": "x",
+      "username": "dieggounu",
+      "full_name": "dieggounu",
+      "profile_url": "https://x.com/dieggounu",
+      "photo_url": "redes_sociales/fiscalia/inteligencia/cibernetica/1/100/1/x/images/dieggounu.jpg",
+      "sources": [
+        "x:jvgador9"
+      ]
+    },
+    {
+      "platform": "x",
+      "username": "mildred_mit",
+      "full_name": "mildred_mit",
+      "profile_url": "https://x.com/mildred_mit",
+      "photo_url": "redes_sociales/fiscalia/inteligencia/cibernetica/1/100/1/x/images/mildred_mit.jpg",
+      "sources": [
+        "x:jvgador9"
+      ]
+    },
+    {
+      "platform": "x",
+      "username": "ChivasShitpost",
+      "full_name": "ChivasShitpost",
+      "profile_url": "https://x.com/ChivasShitpost",
+      "photo_url": "redes_sociales/fiscalia/inteligencia/cibernetica/1/100/1/x/images/ChivasShitpost.jpg",
+      "sources": [
+        "x:jvgador9"
+      ]
+    }
+  ],
+  "relations": [
+    {
+      "platform": "x",
+      "source": "jvgador9",
+      "target": "ximmj_",
+      "type": "follower"
+    },
+    {
+      "platform": "x",
+      "source": "jvgador9",
+      "target": "itsvariann",
+      "type": "follower"
+    },
+    {
+      "platform": "x",
+      "source": "jvgador9",
+      "target": "Emergenteqro",
+      "type": "follower"
+    },
+    {
+      "platform": "x",
+      "source": "jvgador9",
+      "target": "its_josssss",
+      "type": "follower"
+    },
+    {
+      "platform": "x",
+      "source": "jvgador9",
+      "target": "artemisia56",
+      "type": "follower"
+    },
+    {
+      "platform": "x",
+      "source": "jvgador9",
+      "target": "Alex_fxrnxndxz",
+      "type": "follower"
+    },
+    {
+      "platform": "x",
+      "source": "jvgador9",
+      "target": "condena",
+      "type": "follower"
+    },
+    {
+      "platform": "x",
+      "source": "jvgador9",
+      "target": "JairSil88002328",
+      "type": "follower"
+    },
+    {
+      "platform": "x",
+      "source": "jvgador9",
+      "target": "furitriste",
+      "type": "follower"
+    },
+    {
+      "platform": "x",
+      "source": "jvgador9",
+      "target": "ElTonyeishon",
+      "type": "follower"
+    },
+    {
+      "platform": "x",
+      "source": "jvgador9",
+      "target": "mikelovinroll",
+      "type": "follower"
+    },
+    {
+      "platform": "x",
+      "source": "jvgador9",
+      "target": "MarcoMayoral4",
+      "type": "follower"
+    },
+    {
+      "platform": "x",
+      "source": "jvgador9",
+      "target": "saaamvaz",
+      "type": "follower"
+    },
+    {
+      "platform": "x",
+      "source": "jvgador9",
+      "target": "Urinaaal",
+      "type": "follower"
+    },
+    {
+      "platform": "x",
+      "source": "jvgador9",
+      "target": "Uziel25435861",
+      "type": "follower"
+    },
+    {
+      "platform": "x",
+      "source": "jvgador9",
+      "target": "nolislas",
+      "type": "follower"
+    },
+    {
+      "platform": "x",
+      "source": "jvgador9",
+      "target": "andy_melgarejoo",
+      "type": "follower"
+    },
+    {
+      "platform": "x",
+      "source": "jvgador9",
+      "target": "eduardoRbarquer",
+      "type": "follower"
+    },
+    {
+      "platform": "x",
+      "source": "jvgador9",
+      "target": "tuff_samurai",
+      "type": "follower"
+    },
+    {
+      "platform": "x",
+      "source": "jvgador9",
+      "target": "abbiesmo",
+      "type": "follower"
+    },
+    {
+      "platform": "x",
+      "source": "jvgador9",
+      "target": "EseWey_21",
+      "type": "follower"
+    },
+    {
+      "platform": "x",
+      "source": "jvgador9",
+      "target": "Eh432346",
+      "type": "follower"
+    },
+    {
+      "platform": "x",
+      "source": "jvgador9",
+      "target": "Pitufi_Anzures",
+      "type": "follower"
+    },
+    {
+      "platform": "x",
+      "source": "jvgador9",
+      "target": "JmMawui",
+      "type": "follower"
+    },
+    {
+      "platform": "x",
+      "source": "jvgador9",
+      "target": "blueethoughtsss",
+      "type": "follower"
+    },
+    {
+      "platform": "x",
+      "source": "jvgador9",
+      "target": "Yerrix3",
+      "type": "follower"
+    },
+    {
+      "platform": "x",
+      "source": "jvgador9",
+      "target": "Dieg0_cam",
+      "type": "follower"
+    },
+    {
+      "platform": "x",
+      "source": "jvgador9",
+      "target": "CunaDeVersos",
+      "type": "follower"
+    },
+    {
+      "platform": "x",
+      "source": "jvgador9",
+      "target": "Lalo_Guerrero09",
+      "type": "follower"
+    },
+    {
+      "platform": "x",
+      "source": "jvgador9",
+      "target": "pitufimai",
+      "type": "follower"
+    },
+    {
+      "platform": "x",
+      "source": "jvgador9",
+      "target": "Isaac33593102",
+      "type": "follower"
+    },
+    {
+      "platform": "x",
+      "source": "jvgador9",
+      "target": "vhca123",
+      "type": "follower"
+    },
+    {
+      "platform": "x",
+      "source": "jvgador9",
+      "target": "dieggounu",
+      "type": "follower"
+    },
+    {
+      "platform": "x",
+      "source": "jvgador9",
+      "target": "mildred_mit",
+      "type": "follower"
+    },
+    {
+      "platform": "x",
+      "source": "jvgador9",
+      "target": "ximmj_",
+      "type": "following"
+    },
+    {
+      "platform": "x",
+      "source": "jvgador9",
+      "target": "itsvariann",
+      "type": "following"
+    },
+    {
+      "platform": "x",
+      "source": "jvgador9",
+      "target": "its_josssss",
+      "type": "following"
+    },
+    {
+      "platform": "x",
+      "source": "jvgador9",
+      "target": "nolislas",
+      "type": "following"
+    },
+    {
+      "platform": "x",
+      "source": "jvgador9",
+      "target": "Eh432346",
+      "type": "following"
+    },
+    {
+      "platform": "x",
+      "source": "jvgador9",
+      "target": "ChivasShitpost",
+      "type": "following"
+    },
+    {
+      "platform": "x",
+      "source": "jvgador9",
+      "target": "eduardoRbarquer",
+      "type": "following"
+    },
+    {
+      "platform": "x",
+      "source": "jvgador9",
+      "target": "mikelovinroll",
+      "type": "following"
+    },
+    {
+      "platform": "x",
+      "source": "jvgador9",
+      "target": "Lalo_Guerrero09",
+      "type": "following"
+    },
+    {
+      "platform": "x",
+      "source": "jvgador9",
+      "target": "dieggounu",
+      "type": "following"
+    },
+    {
+      "platform": "x",
+      "source": "jvgador9",
+      "target": "blueethoughtsss",
+      "type": "following"
+    },
+    {
+      "platform": "x",
+      "source": "jvgador9",
+      "target": "JairSil88002328",
+      "type": "following"
+    },
+    {
+      "platform": "x",
+      "source": "jvgador9",
+      "target": "artemisia56",
+      "type": "following"
+    },
+    {
+      "platform": "x",
+      "source": "jvgador9",
+      "target": "Pitufi_Anzures",
+      "type": "following"
+    },
+    {
+      "platform": "x",
+      "source": "jvgador9",
+      "target": "Alex_fxrnxndxz",
+      "type": "following"
+    },
+    {
+      "platform": "x",
+      "source": "jvgador9",
+      "target": "condena",
+      "type": "following"
+    },
+    {
+      "platform": "x",
+      "source": "jvgador9",
+      "target": "Uziel25435861",
+      "type": "following"
+    },
+    {
+      "platform": "x",
+      "source": "jvgador9",
+      "target": "EseWey_21",
+      "type": "following"
+    },
+    {
+      "platform": "x",
+      "source": "jvgador9",
+      "target": "Yerrix3",
+      "type": "following"
+    },
+    {
+      "platform": "x",
+      "source": "jvgador9",
+      "target": "Dieg0_cam",
+      "type": "following"
+    },
+    {
+      "platform": "x",
+      "source": "jvgador9",
+      "target": "pitufimai",
+      "type": "following"
+    }
+  ],
+  "warnings": [],
+  "meta": {
+    "schema_version": 2,
+    "generated_at": "2025-11-28T08:48:56.812180",
+    "roots_processed": 1,
+    "context": {
+      "id_identidad": 1,
+      "id_caso": 100,
+      "analizado_por": 1
+    }
+  }
+}

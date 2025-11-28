@@ -264,6 +264,29 @@ class AnalysisStatusResponse(BaseModel):
     ruta_grafo_ftp: Optional[str]
 
 
+class BatchAnalysisRequest(BaseModel):
+    """
+    Solicitud para iniciar análisis en lote de múltiples personas.
+    El sistema buscará todas las identidades digitales asociadas a estas personas.
+    """
+    personas_ids: List[int] = Field(..., min_items=1, description="Lista de IDs de personas a analizar")
+    context: UserContext
+    
+    # Parámetros opcionales del scraping
+    max_photos: int = Field(5, ge=0, le=50)
+    headless: bool = True
+    max_depth: int = Field(2, ge=1, le=3)
+
+
+class BatchAnalysisResponse(BaseModel):
+    """Respuesta inmediata al iniciar un análisis en lote."""
+    mensaje: str
+    total_identidades_encontradas: int
+    identidades_iniciadas: List[int]
+    identidades_omitidas: List[int]
+    detalle: str
+
+
 class VinculoObjetivoCasoIn(BaseModel):
     """Vincula una Persona Objetivo con un Caso."""
     id_caso: int

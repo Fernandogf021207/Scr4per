@@ -87,7 +87,7 @@ class InstagramAdapter:
             pass
         return context, page
 
-    async def get_root_profile(self, username: str) -> Dict[str, Any]:
+    async def get_root_profile(self, username: str, image_base_path: Optional[str] = None) -> Dict[str, Any]:
         from src.scrapers.instagram.scraper import obtener_datos_usuario_principal
         context, page = await self._new_page()
         try:
@@ -104,7 +104,21 @@ class InstagramAdapter:
             # Ensure local image path
             if prof.get('photo_url'):
                 platform_ftp = f"red_{self.platform}"
-                prof['photo_url'] = await local_or_proxy_photo_url(prof['photo_url'], username, platform_ftp, mode='download', photo_owner=prof['username'], page=page)
+                
+                # Prepare ftp_path
+                ftp_path = image_base_path if image_base_path else None
+                if ftp_path and not ftp_path.endswith('/'):
+                    ftp_path += '/'
+                
+                prof['photo_url'] = await local_or_proxy_photo_url(
+                    prof['photo_url'], 
+                    username, 
+                    platform_ftp, 
+                    mode='download', 
+                    photo_owner=prof['username'], 
+                    page=page,
+                    ftp_path=ftp_path
+                )
             return prof
         finally:
             await context.close()
@@ -214,7 +228,7 @@ class FacebookAdapter:
             pass
         return context, page
 
-    async def get_root_profile(self, username: str) -> Dict[str, Any]:
+    async def get_root_profile(self, username: str, image_base_path: Optional[str] = None) -> Dict[str, Any]:
         from src.scrapers.facebook.scraper import obtener_datos_usuario_facebook
         context, page = await self._new_page()
         try:
@@ -229,7 +243,21 @@ class FacebookAdapter:
             }
             if prof.get('photo_url'):
                 platform_ftp = f"red_{self.platform}"
-                prof['photo_url'] = await local_or_proxy_photo_url(prof['photo_url'], username, platform_ftp, mode='download', photo_owner=prof['username'], page=page)
+                
+                # Prepare ftp_path
+                ftp_path = image_base_path if image_base_path else None
+                if ftp_path and not ftp_path.endswith('/'):
+                    ftp_path += '/'
+                
+                prof['photo_url'] = await local_or_proxy_photo_url(
+                    prof['photo_url'], 
+                    username, 
+                    platform_ftp, 
+                    mode='download', 
+                    photo_owner=prof['username'], 
+                    page=page,
+                    ftp_path=ftp_path
+                )
             return prof
         finally:
             await context.close()

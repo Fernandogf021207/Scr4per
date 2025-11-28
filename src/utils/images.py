@@ -128,7 +128,8 @@ async def download_profile_image(
                         final_path = f"{ftp_path}{filename}"
                         
                     ftp.upload_file(final_path, resp.content)
-                    return final_path
+                    # Return URL pointing to the new endpoint
+                    return f"/files/scraped-image-path/{final_path}"
                 else:
                     ftp.upload(
                         platform=platform,
@@ -169,7 +170,7 @@ async def download_profile_image(
                             if ftp_path.endswith('/'):
                                 final_path = f"{ftp_path}{filename}"
                             ftp.upload_file(final_path, body_data)
-                            return final_path
+                            return f"/files/scraped-image-path/{final_path}"
                         else:
                             ftp.upload(platform, username, 'images', filename, body_data)
                             return f"/files/scraped-image/{platform}/{username}/{filename}"
@@ -226,7 +227,8 @@ async def local_or_proxy_photo_url(
     attempts = max(1, int(retries))
     for i in range(attempts):
         result = await download_profile_image(photo_url, username, platform, photo_owner=photo_owner, page=page, on_failure='proxy', ftp_path=ftp_path)
-        if result and (result.startswith('/storage/') or result.startswith(PUBLIC_IMAGES_PREFIX_PRIMARY) or result.startswith('/files/') or (ftp_path and result == ftp_path)):
+        # Accept result if it's a valid path (not a proxy fallback)
+        if result and not result.startswith('/proxy-image'):
             return result
         if i < attempts - 1:
             try:
