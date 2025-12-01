@@ -12,7 +12,9 @@ import asyncio
 from ..schemas import (
     AnalysisRequest,
     AnalysisStatusResponse,
-    IdentidadDigitalOut,
+    IdentidadDigitalOut
+)
+from ..schemas_batch import (
     BatchAnalysisRequest,
     BatchAnalysisResponse
 )
@@ -57,46 +59,37 @@ def get_identidad_digital(conn, id_identidad: int) -> Optional[dict]:
                 id_identidad,
                 id_persona,
                 plataforma,
-                usuario_o_url,
-                estado,
-                id_perfil_scraped,
-                ruta_grafo_ftp,
-                ultimo_analisis
+                usuario_o_url
             FROM entidades.identidades_digitales
             WHERE id_identidad = %s
         """, (id_identidad,))
         return cur.fetchone()
 
 
-def update_identidad_estado(conn, id_identidad: int, estado: str, 
-                            mensaje_error: Optional[str] = None):
-    """Actualiza el estado de una identidad digital."""
+def update_identidad_estado(conn, id_identidad: int, estado: str, id_caso: int):
+    """Actualiza el estado de una identidad digital en el contexto de un caso."""
     with conn.cursor() as cur:
-        # Nota: mensaje_error no existe en el esquema MD, solo actualizamos estado
         cur.execute("""
-            UPDATE entidades.identidades_digitales
-            SET estado = %s::entidades.estado_analisis_enum,
-                ultimo_analisis = CASE WHEN %s IN ('analizado', 'error') THEN NOW() ELSE ultimo_analisis END
-            WHERE id_identidad = %s
-        """, (estado, estado, id_identidad))
+            UPDATE casos.analisis_identidad
+            SET estado = %s::casos.estado_analisis_enum
+            WHERE id_identidad = %s AND idcaso = %s
+        """, (estado, id_identidad, id_caso))
         conn.commit()
 
 
-def update_identidad_resultado(conn, id_identidad: int, 
+def update_identidad_resultado(conn, id_identidad: int, id_caso: int,
                                id_perfil_scraped: Optional[int],
-                               ruta_grafo_ftp: Optional[str],
-                               ruta_evidencia_ftp: Optional[str]):
-    """Actualiza los resultados del análisis."""
+                               ruta_grafo_ftp: Optional[str]):
+    """Actualiza los resultados del análisis en el contexto de un caso."""
     with conn.cursor() as cur:
-        # Nota: ruta_evidencia_ftp no existe en el esquema MD
         cur.execute("""
-            UPDATE entidades.identidades_digitales
+            UPDATE casos.analisis_identidad
             SET id_perfil_scraped = %s,
                 ruta_grafo_ftp = %s,
-                estado = 'analizado'::entidades.estado_analisis_enum,
-                ultimo_analisis = NOW()
-            WHERE id_identidad = %s
-        """, (id_perfil_scraped, ruta_grafo_ftp, id_identidad))
+                estado = 'analizado'::casos.estado_analisis_enum,
+                fecha_analisis = NOW()
+            WHERE id_identidad = %s AND idcaso = %s
+        """, (id_perfil_scraped, ruta_grafo_ftp, id_identidad, id_caso))
         conn.commit()
 
 
@@ -145,7 +138,8 @@ async def ejecutar_analisis_background(
         conn = get_conn()
         
         # 1. Actualizar estado a procesando
-        update_identidad_estado(conn, id_identidad, 'procesando')
+        id_caso = context.get('id_caso')
+        update_identidad_estado(conn, id_identidad, 'procesando', id_caso)
         logger.info(f"Iniciando análisis de identidad {id_identidad}: {plataforma}/{usuario_o_url}")
         
         # 2. Extraer username de la URL si es necesario
@@ -301,9 +295,9 @@ async def ejecutar_analisis_background(
         update_identidad_resultado(
             conn,
             id_identidad=id_identidad,
+            id_caso=id_caso,
             id_perfil_scraped=profile_id,
-            ruta_grafo_ftp=ruta_grafo,
-            ruta_evidencia_ftp=ruta_evidencia
+            ruta_grafo_ftp=ruta_grafo
         )
         
         logger.info(f"Análisis completado exitosamente para identidad {id_identidad}")
@@ -312,11 +306,12 @@ async def ejecutar_analisis_background(
         logger.exception(f"Error en análisis de identidad {id_identidad}: {e}")
         
         if conn:
+            id_caso = context.get('id_caso')
             update_identidad_estado(
                 conn,
                 id_identidad=id_identidad,
                 estado='error',
-                mensaje_error=str(e)[:500]  # Limitar longitud del error
+                id_caso=id_caso
             )
             increment_intentos_fallidos(conn, id_identidad)
     
@@ -467,69 +462,8 @@ async def ejecutar_analisis_con_semaforo(
 # ENDPOINTS
 # ==================================================================
 
-@router.post("/batch", response_model=BatchAnalysisResponse)
-async def start_batch_analysis_by_persons(
-    request: BatchAnalysisRequest, 
-    background_tasks: BackgroundTasks
-):
-    """
-    Inicia el análisis en lote para una lista de personas.
-    Busca todas las identidades digitales asociadas y las encola para análisis.
-    """
-    conn = get_conn()
-    try:
-        # 1. Obtener todas las identidades de las personas solicitadas
-        identidades = get_identidades_por_personas(conn, request.personas_ids)
-        
-        iniciadas = []
-        omitidas = []
-        
-        from datetime import datetime, timedelta
-        
-        for ident in identidades:
-            id_identidad = ident['id_identidad']
-            estado = ident['estado']
-            ultimo_analisis = ident['ultimo_analisis']
-            
-            # Lógica de filtrado (similar a start_analysis individual)
-            should_process = True
-            if estado == 'procesando':
-                if ultimo_analisis:
-                    tiempo_transcurrido = datetime.now(ultimo_analisis.tzinfo) - ultimo_analisis
-                    if tiempo_transcurrido < timedelta(minutes=10):
-                        should_process = False
-                else:
-                    should_process = False
-            
-            if should_process:
-                # Actualizar estado a procesando inmediatamente
-                update_identidad_estado(conn, id_identidad, 'procesando')
-                
-                # Encolar tarea con semáforo
-                background_tasks.add_task(
-                    ejecutar_analisis_con_semaforo,
-                    id_identidad=id_identidad,
-                    plataforma=ident['plataforma'],
-                    usuario_o_url=ident['usuario_o_url'],
-                    context=request.context.dict(),
-                    max_photos=request.max_photos,
-                    headless=request.headless,
-                    max_depth=request.max_depth
-                )
-                iniciadas.append(id_identidad)
-            else:
-                omitidas.append(id_identidad)
-        
-        return BatchAnalysisResponse(
-            mensaje="Proceso de análisis en lote iniciado",
-            total_identidades_encontradas=len(identidades),
-            identidades_iniciadas=iniciadas,
-            identidades_omitidas=omitidas,
-            detalle=f"Se iniciaron {len(iniciadas)} análisis. {len(omitidas)} omitidos por estar ya en proceso."
-        )
-        
-    finally:
-        conn.close()
+# @router.post("/batch") -> MOVED TO batch_analyze.py
+
 
 
 @router.post("/start", response_model=AnalysisStatusResponse)

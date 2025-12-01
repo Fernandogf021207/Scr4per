@@ -1,6 +1,6 @@
 from typing import Optional, Literal, List, Dict, Any
 from datetime import datetime
-from pydantic import BaseModel, Field, validator
+from pydantic import BaseModel, Field, validator, model_validator
 
 class ProfileIn(BaseModel):
     platform: Literal['x', 'instagram', 'facebook']
@@ -130,12 +130,12 @@ class MultiScrapeRequest(BaseModel):
             raise ValueError('Max 5 roots')
         return v
 
-    @validator('max_concurrency', always=True)
-    def _default_max_concurrency(cls, v: Optional[int], values: Dict[str, Any]):
-        if v is not None:
-            return v
-        roots = values.get('roots') or []
-        return 1 if len(roots) <= 1 else 3
+    @model_validator(mode='after')
+    def _default_max_concurrency(self):
+        if self.max_concurrency is None:
+            roots = self.roots or []
+            self.max_concurrency = 1 if len(roots) <= 1 else 3
+        return self
 
 
 class MultiScrapeProfileItem(BaseModel):
@@ -264,27 +264,7 @@ class AnalysisStatusResponse(BaseModel):
     ruta_grafo_ftp: Optional[str]
 
 
-class BatchAnalysisRequest(BaseModel):
-    """
-    Solicitud para iniciar análisis en lote de múltiples personas.
-    El sistema buscará todas las identidades digitales asociadas a estas personas.
-    """
-    personas_ids: List[int] = Field(..., min_items=1, description="Lista de IDs de personas a analizar")
-    context: UserContext
-    
-    # Parámetros opcionales del scraping
-    max_photos: int = Field(5, ge=0, le=50)
-    headless: bool = True
-    max_depth: int = Field(2, ge=1, le=3)
-
-
-class BatchAnalysisResponse(BaseModel):
-    """Respuesta inmediata al iniciar un análisis en lote."""
-    mensaje: str
-    total_identidades_encontradas: int
-    identidades_iniciadas: List[int]
-    identidades_omitidas: List[int]
-    detalle: str
+# BatchAnalysisRequest and BatchAnalysisResponse moved to schemas_batch.py
 
 
 class VinculoObjetivoCasoIn(BaseModel):

@@ -20,7 +20,8 @@ def create_app() -> FastAPI:
     _default_frontend_origins = [
         "http://localhost:3000",
         "http://127.0.0.1:3000",
-        
+        "http://192.168.100.207",
+        "http://192.168.100.93:5173",
         "http://localhost:5173",
         "https://naatintelligence.com",
     ]
@@ -54,6 +55,7 @@ def create_app() -> FastAPI:
     from .routers.files import router as files_router
     from .routers.multi_scrape import router as multi_scrape_router
     from .routers.analyze import router as analyze_router
+    from .routers.batch_analyze import router as batch_analyze_router
     from .routers.targets import router as targets_router
 
     app.include_router(health_router)
@@ -70,6 +72,7 @@ def create_app() -> FastAPI:
     app.include_router(files_router, prefix="/files")
     app.include_router(multi_scrape_router)
     app.include_router(analyze_router)
+    app.include_router(batch_analyze_router)
     app.include_router(targets_router)
 
     return app
