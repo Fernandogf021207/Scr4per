@@ -1,9 +1,13 @@
 from typing import List, Optional, Dict, Any
-from fastapi import APIRouter, HTTPException, Depends
+from fastapi import APIRouter, HTTPException, Depends, status
 from pydantic import BaseModel
 from ..schemas_batch import (
     PersonaIn, IdentidadDigitalIn, VinculoObjetivoCasoIn, 
     SeleccionIdentidadIn, AnalisisIdentidadOut
+)
+from ..schemas_targets import (
+    PersonaCreate, PersonaUpdate, PersonaResponse, 
+    IdentidadCreate, IdentidadResponse
 )
 from ..db import get_conn
 import logging
@@ -29,6 +33,312 @@ class IdentidadDigitalOut(IdentidadDigitalIn):
 class VinculoOut(VinculoObjetivoCasoIn):
     id_vinculo: int
     fecha_agregado: Any
+
+# ==================================================================
+# CRUD ROBUSTO (NUEVO)
+# ==================================================================
+
+@router.post("/", response_model=PersonaResponse, status_code=status.HTTP_201_CREATED)
+def create_persona_atomic(payload: PersonaCreate):
+    """
+    Crea una nueva persona, la vincula al caso especificado y registra sus redes sociales iniciales.
+    Todo en una sola transacción atómica.
+    """
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            # 1. Crear la Persona Física
+            datos_json = json.dumps(payload.datos_adicionales or {})
+            cur.execute("""
+                INSERT INTO entidades.personas 
+                (nombre, apellido_paterno, apellido_materno, curp, rfc, fecha_nacimiento, tipo_sangre, datos_adicionales, foto)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                RETURNING id_persona, fecha_creacion
+            """, (
+                payload.nombre,
+                payload.apellido_paterno,
+                payload.apellido_materno,
+                payload.curp,
+                payload.rfc,
+                payload.fecha_nacimiento,
+                payload.tipo_sangre,
+                datos_json,
+                payload.foto
+            ))
+            persona_row = cur.fetchone()
+            id_persona = persona_row['id_persona']
+            fecha_creacion = persona_row['fecha_creacion']
+
+            # 2. Vincular al Caso (Tabla Puente)
+            cur.execute("""
+                INSERT INTO casos.vinculos_objetivo
+                (idcaso, id_persona, agregado_por)
+                VALUES (%s, %s, %s)
+            """, (payload.id_caso, id_persona, payload.id_usuario))
+
+            # 3. Registrar Identidades Digitales Iniciales
+            identidades_creadas = []
+            for ident in payload.identidades:
+                cur.execute("""
+                    INSERT INTO entidades.identidades_digitales
+                    (id_persona, plataforma, usuario_o_url)
+                    VALUES (%s, %s, %s)
+                    RETURNING id_identidad, id_persona, plataforma, usuario_o_url
+                """, (id_persona, ident.plataforma, ident.usuario_o_url))
+                identidades_creadas.append(cur.fetchone())
+
+            conn.commit()
+
+            # Construir respuesta
+            return {
+                "id_persona": id_persona,
+                "nombre": payload.nombre,
+                "apellido_paterno": payload.apellido_paterno,
+                "apellido_materno": payload.apellido_materno,
+                "curp": payload.curp,
+                "rfc": payload.rfc,
+                "fecha_nacimiento": payload.fecha_nacimiento,
+                "tipo_sangre": payload.tipo_sangre,
+                "foto": payload.foto,
+                "datos_adicionales": payload.datos_adicionales,
+                "fecha_creacion": fecha_creacion,
+                "identidades": identidades_creadas
+            }
+
+    except Exception as e:
+        conn.rollback()
+        logger.error(f"Error creando persona atomicamente: {e}")
+        raise HTTPException(status_code=400, detail=str(e))
+    finally:
+        conn.close()
+
+@router.put("/{id_persona}", response_model=PersonaResponse)
+def update_persona(id_persona: int, payload: PersonaUpdate):
+    """
+    Actualiza datos biográficos de la persona.
+    """
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            # Verificar existencia
+            cur.execute("SELECT id_persona FROM entidades.personas WHERE id_persona = %s", (id_persona,))
+            if not cur.fetchone():
+                raise HTTPException(status_code=404, detail="Persona no encontrada")
+
+            # Construir query dinámica
+            update_fields = []
+            params = []
+            
+            fields_map = {
+                'nombre': payload.nombre,
+                'apellido_paterno': payload.apellido_paterno,
+                'apellido_materno': payload.apellido_materno,
+                'curp': payload.curp,
+                'rfc': payload.rfc,
+                'fecha_nacimiento': payload.fecha_nacimiento,
+                'tipo_sangre': payload.tipo_sangre,
+                'foto': payload.foto
+            }
+
+            for field, value in fields_map.items():
+                if value is not None:
+                    update_fields.append(f"{field} = %s")
+                    params.append(value)
+
+            if payload.datos_adicionales is not None:
+                update_fields.append("datos_adicionales = %s")
+                params.append(json.dumps(payload.datos_adicionales))
+
+            if not update_fields:
+                # Nada que actualizar, devolver actual
+                pass
+            else:
+                query = f"UPDATE entidades.personas SET {', '.join(update_fields)} WHERE id_persona = %s"
+                params.append(id_persona)
+                cur.execute(query, tuple(params))
+                conn.commit()
+
+            # Obtener persona actualizada con identidades
+            cur.execute("""
+                SELECT * FROM entidades.personas WHERE id_persona = %s
+            """, (id_persona,))
+            persona = cur.fetchone()
+            
+            cur.execute("""
+                SELECT id_identidad, id_persona, plataforma, usuario_o_url 
+                FROM entidades.identidades_digitales WHERE id_persona = %s
+            """, (id_persona,))
+            identidades = cur.fetchall()
+            
+            persona['identidades'] = identidades
+            return persona
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        conn.rollback()
+        logger.error(f"Error actualizando persona: {e}")
+        raise HTTPException(status_code=400, detail=str(e))
+    finally:
+        conn.close()
+
+@router.delete("/{id_persona}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_persona(id_persona: int, id_caso: Optional[int] = None):
+    """
+    Elimina o desvincula a una persona.
+    
+    - Si se proporciona 'id_caso': SOLO desvincula a la persona de ese caso (Unlink).
+      La persona sigue existiendo en la base de datos y en otros casos.
+      
+    - Si NO se proporciona 'id_caso': Intenta eliminar la persona GLOBALMENTE.
+      Falla si la persona está vinculada a otros casos (Protección de Integridad).
+    """
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            # 1. Modo Desvinculación (Seguro para el caso)
+            if id_caso:
+                cur.execute("""
+                    DELETE FROM casos.vinculos_objetivo 
+                    WHERE id_persona = %s AND idcaso = %s
+                """, (id_persona, id_caso))
+                
+                if cur.rowcount == 0:
+                    raise HTTPException(status_code=404, detail="La persona no está vinculada a este caso")
+                
+                conn.commit()
+                return None
+
+            # 2. Modo Eliminación Global (Cuidado)
+            else:
+                # Verificar si está siendo usada en algún caso
+                cur.execute("""
+                    SELECT COUNT(*) as count FROM casos.vinculos_objetivo WHERE id_persona = %s
+                """, (id_persona,))
+                usos_activos = cur.fetchone()['count']
+                
+                if usos_activos > 0:
+                    raise HTTPException(
+                        status_code=400, 
+                        detail=f"No se puede eliminar: Esta persona está vinculada a {usos_activos} casos. Usa 'id_caso' para desvincularla o elimina los vínculos primero."
+                    )
+
+                cur.execute("DELETE FROM entidades.personas WHERE id_persona = %s", (id_persona,))
+                if cur.rowcount == 0:
+                    raise HTTPException(status_code=404, detail="Persona no encontrada")
+                conn.commit()
+                return None
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        conn.rollback()
+        logger.error(f"Error eliminando persona: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        conn.close()
+
+@router.post("/{id_persona}/identities", response_model=IdentidadResponse)
+def add_identity_to_persona(id_persona: int, payload: IdentidadCreate):
+    """
+    Agrega una red social extra a una persona existente.
+    """
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            # Verificar persona
+            cur.execute("SELECT id_persona FROM entidades.personas WHERE id_persona = %s", (id_persona,))
+            if not cur.fetchone():
+                raise HTTPException(status_code=404, detail="Persona no encontrada")
+
+            # Verificar duplicado
+            cur.execute("""
+                SELECT id_identidad FROM entidades.identidades_digitales
+                WHERE id_persona = %s AND plataforma = %s AND usuario_o_url = %s
+            """, (id_persona, payload.plataforma, payload.usuario_o_url))
+            if cur.fetchone():
+                raise HTTPException(status_code=409, detail="Esta identidad ya está registrada para esta persona")
+
+            # Insertar
+            cur.execute("""
+                INSERT INTO entidades.identidades_digitales
+                (id_persona, plataforma, usuario_o_url)
+                VALUES (%s, %s, %s)
+                RETURNING id_identidad, id_persona, plataforma, usuario_o_url
+            """, (id_persona, payload.plataforma, payload.usuario_o_url))
+            
+            nueva_identidad = cur.fetchone()
+            conn.commit()
+            return nueva_identidad
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        conn.rollback()
+        logger.error(f"Error agregando identidad: {e}")
+        raise HTTPException(status_code=400, detail=str(e))
+    finally:
+        conn.close()
+
+@router.delete("/{id_persona}/identities/{id_identidad}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_identity_from_persona(id_persona: int, id_identidad: int, id_caso: Optional[int] = None):
+    """
+    Elimina o desvincula una red social.
+
+    - Si se proporciona 'id_caso': SOLO elimina el análisis/historial en ESE caso.
+      La identidad sigue existiendo en el catálogo global de la persona.
+
+    - Si NO se proporciona 'id_caso': Intenta eliminar la identidad GLOBALMENTE.
+      Falla si la identidad tiene análisis activos en otros casos.
+    """
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            # Verificar existencia de la identidad y que pertenezca a la persona
+            cur.execute("""
+                SELECT id_identidad FROM entidades.identidades_digitales 
+                WHERE id_identidad = %s AND id_persona = %s
+            """, (id_identidad, id_persona))
+            if not cur.fetchone():
+                raise HTTPException(status_code=404, detail="Identidad digital no encontrada para esta persona")
+
+            # 1. Modo Desvinculación de Caso (Borrar Análisis)
+            if id_caso:
+                cur.execute("""
+                    DELETE FROM casos.analisis_identidad 
+                    WHERE id_identidad = %s AND idcaso = %s
+                """, (id_identidad, id_caso))
+                
+                # Si no había análisis, no pasa nada (idempotente), pero confirmamos éxito.
+                conn.commit()
+                return None
+
+            # 2. Modo Eliminación Global
+            else:
+                # Verificar si tiene análisis en CUALQUIER caso
+                cur.execute("""
+                    SELECT COUNT(*) as count FROM casos.analisis_identidad WHERE id_identidad = %s
+                """, (id_identidad,))
+                usos_activos = cur.fetchone()['count']
+
+                if usos_activos > 0:
+                    raise HTTPException(
+                        status_code=400, 
+                        detail=f"No se puede eliminar: Esta cuenta tiene evidencia generada en {usos_activos} casos. Usa 'id_caso' para limpiarla de un caso específico."
+                    )
+            
+                cur.execute("DELETE FROM entidades.identidades_digitales WHERE id_identidad = %s", (id_identidad,))
+                conn.commit()
+                return None
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        conn.rollback()
+        logger.error(f"Error eliminando identidad: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        conn.close()
 
 # ==================================================================
 # PERSONAS (Nueva Tabla entidades.personas)
@@ -198,6 +508,9 @@ class PersonaCardOut(BaseModel):
     foto: Optional[str] = None
     curp: Optional[str] = None
     rfc: Optional[str] = None
+    fecha_nacimiento: Optional[Any] = None
+    tipo_sangre: Optional[str] = None
+    datos_adicionales: Optional[Dict[str, Any]] = None
     fecha_agregado: Any
     identidades_asociadas: List[IdentidadAsociada] = []
 
@@ -221,6 +534,9 @@ def get_tablero_personas(id_caso: int):
                     foto,
                     curp,
                     rfc,
+                    fecha_nacimiento,
+                    tipo_sangre,
+                    datos_adicionales,
                     fecha_agregado,
                     identidades_asociadas
                 FROM casos.vista_tablero_personas 
