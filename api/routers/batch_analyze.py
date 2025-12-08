@@ -14,6 +14,7 @@ from ..schemas_batch import (
 )
 from ..db import get_conn
 from .analyze import ejecutar_analisis_background, GLOBAL_SEMAPHORE
+from src.utils.event_manager import event_manager
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/analyze", tags=["analyze-batch"])
@@ -23,7 +24,11 @@ router = APIRouter(prefix="/analyze", tags=["analyze-batch"])
 # ==================================================================
 
 def get_identidades_por_personas(conn, personas_ids: List[int], id_caso: int) -> List[dict]:
-    """Obtiene identidades digitales de personas, filtradas por selección en el caso."""
+    """
+    Obtiene TODAS las identidades digitales de las personas solicitadas.
+    Si ya existen en el caso, trae su estado actual.
+    Si no existen, trae estado NULL (para luego hacer upsert).
+    """
     if not personas_ids:
         return []
     with conn.cursor() as cur:
@@ -36,10 +41,24 @@ def get_identidades_por_personas(conn, personas_ids: List[int], id_caso: int) ->
                 ai.estado,
                 ai.fecha_analisis as ultimo_analisis
             FROM entidades.identidades_digitales i
-            JOIN casos.analisis_identidad ai ON i.id_identidad = ai.id_identidad
-            WHERE i.id_persona = ANY(%s) AND ai.idcaso = %s
-        """, (personas_ids, id_caso))
+            LEFT JOIN casos.analisis_identidad ai 
+                ON i.id_identidad = ai.id_identidad AND ai.idcaso = %s
+            WHERE i.id_persona = ANY(%s)
+        """, (id_caso, personas_ids))
         return [dict(row) for row in cur.fetchall()]
+
+def ensure_identidad_en_caso(conn, id_identidad: int, id_caso: int):
+    """
+    Asegura que la identidad esté registrada en el caso (Upsert).
+    Si no existe, la crea con estado 'pendiente'.
+    """
+    with conn.cursor() as cur:
+        cur.execute("""
+            INSERT INTO casos.analisis_identidad (idcaso, id_identidad, estado)
+            VALUES (%s, %s, 'pendiente')
+            ON CONFLICT (idcaso, id_identidad) DO NOTHING
+        """, (id_caso, id_identidad))
+        conn.commit()
 
 def update_identidad_estado(conn, id_identidad: int, estado: str, id_caso: int):
     """Actualiza el estado de una identidad digital en el caso."""
@@ -50,6 +69,9 @@ def update_identidad_estado(conn, id_identidad: int, estado: str, id_caso: int):
             WHERE id_identidad = %s AND idcaso = %s
         """, (estado, id_identidad, id_caso))
         conn.commit()
+    
+    # Emitir evento SSE
+    asyncio.create_task(event_manager.broadcast_status(id_identidad, estado, id_caso))
 
 async def ejecutar_analisis_con_semaforo(
     id_identidad: int,
@@ -80,10 +102,11 @@ async def start_batch_analysis_by_persons(
     """
     Inicia el análisis en lote para una lista de personas.
     Busca todas las identidades digitales asociadas y las encola para análisis.
+    Si las identidades no estaban seleccionadas previamente para el caso, las agrega automáticamente.
     """
     conn = get_conn()
     try:
-        # 1. Obtener todas las identidades de las personas solicitadas (SOLO LAS SELECCIONADAS PARA EL CASO)
+        # 1. Obtener TODAS las identidades de las personas solicitadas (incluyendo las no seleccionadas)
         identidades = get_identidades_por_personas(conn, request.personas_ids, request.context.id_caso)
         
         iniciadas = []
@@ -91,9 +114,14 @@ async def start_batch_analysis_by_persons(
         
         for ident in identidades:
             id_identidad = ident['id_identidad']
-            estado = ident['estado']
+            estado = ident['estado'] # Puede ser None si no estaba seleccionada
             ultimo_analisis = ident['ultimo_analisis']
             
+            # Si no estaba en el caso (estado is None), la agregamos ahora
+            if estado is None:
+                ensure_identidad_en_caso(conn, id_identidad, request.context.id_caso)
+                estado = 'pendiente' # Asumimos pendiente tras insertar
+
             # Lógica de filtrado:
             # Si está 'procesando' y hace menos de 10 min, omitir.
             should_process = True

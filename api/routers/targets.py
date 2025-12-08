@@ -7,7 +7,8 @@ from ..schemas_batch import (
 )
 from ..schemas_targets import (
     PersonaCreate, PersonaUpdate, PersonaResponse, 
-    IdentidadCreate, IdentidadResponse
+    IdentidadCreate, IdentidadResponse,
+    BatchDeleteRequest, BatchDeleteResponse
 )
 from ..db import get_conn
 import logging
@@ -182,58 +183,76 @@ def update_persona(id_persona: int, payload: PersonaUpdate):
     finally:
         conn.close()
 
-@router.delete("/{id_persona}", status_code=status.HTTP_204_NO_CONTENT)
-def delete_persona(id_persona: int, id_caso: Optional[int] = None):
+@router.delete("/{personas_ids}", status_code=status.HTTP_200_OK)
+def delete_personas(personas_ids: str, id_caso: Optional[int] = None):
     """
-    Elimina o desvincula a una persona.
+    Elimina o desvincula una o varias personas.
     
-    - Si se proporciona 'id_caso': SOLO desvincula a la persona de ese caso (Unlink).
-      La persona sigue existiendo en la base de datos y en otros casos.
-      
-    - Si NO se proporciona 'id_caso': Intenta eliminar la persona GLOBALMENTE.
-      Falla si la persona está vinculada a otros casos (Protección de Integridad).
+    - `personas_ids`: ID único o lista de IDs separados por coma (ej: "1,2,3").
+    - `id_caso`: Si se envía, solo desvincula del caso. Si no, intenta borrar globalmente.
+    
+    Retorna un resumen de la operación.
     """
     conn = get_conn()
+    deleted = []
+    failed = []
+    
     try:
+        # Parsear IDs
+        try:
+            ids_list = [int(x.strip()) for x in personas_ids.split(',') if x.strip()]
+        except ValueError:
+            raise HTTPException(status_code=400, detail="IDs inválidos. Deben ser números separados por coma.")
+
         with conn.cursor() as cur:
-            # 1. Modo Desvinculación (Seguro para el caso)
-            if id_caso:
-                cur.execute("""
-                    DELETE FROM casos.vinculos_objetivo 
-                    WHERE id_persona = %s AND idcaso = %s
-                """, (id_persona, id_caso))
-                
-                if cur.rowcount == 0:
-                    raise HTTPException(status_code=404, detail="La persona no está vinculada a este caso")
-                
-                conn.commit()
-                return None
+            for id_persona in ids_list:
+                try:
+                    # 1. Modo Desvinculación (Seguro para el caso)
+                    if id_caso:
+                        cur.execute("""
+                            DELETE FROM casos.vinculos_objetivo 
+                            WHERE id_persona = %s AND idcaso = %s
+                        """, (id_persona, id_caso))
+                        
+                        # Consideramos éxito si se borró o si ya no estaba (idempotencia)
+                        deleted.append(id_persona)
 
-            # 2. Modo Eliminación Global (Cuidado)
-            else:
-                # Verificar si está siendo usada en algún caso
-                cur.execute("""
-                    SELECT COUNT(*) as count FROM casos.vinculos_objetivo WHERE id_persona = %s
-                """, (id_persona,))
-                usos_activos = cur.fetchone()['count']
-                
-                if usos_activos > 0:
-                    raise HTTPException(
-                        status_code=400, 
-                        detail=f"No se puede eliminar: Esta persona está vinculada a {usos_activos} casos. Usa 'id_caso' para desvincularla o elimina los vínculos primero."
-                    )
+                    # 2. Modo Eliminación Global (Cuidado)
+                    else:
+                        # Verificar si está siendo usada en algún caso
+                        cur.execute("""
+                            SELECT COUNT(*) as count FROM casos.vinculos_objetivo WHERE id_persona = %s
+                        """, (id_persona,))
+                        usos_activos = cur.fetchone()['count']
+                        
+                        if usos_activos > 0:
+                            failed.append({
+                                "id": id_persona, 
+                                "reason": f"Vinculado a {usos_activos} casos"
+                            })
+                            continue
 
-                cur.execute("DELETE FROM entidades.personas WHERE id_persona = %s", (id_persona,))
-                if cur.rowcount == 0:
-                    raise HTTPException(status_code=404, detail="Persona no encontrada")
-                conn.commit()
-                return None
+                        cur.execute("DELETE FROM entidades.personas WHERE id_persona = %s", (id_persona,))
+                        if cur.rowcount > 0:
+                            deleted.append(id_persona)
+                        else:
+                            # Si no existe, lo marcamos como fallido o ignorado? 
+                            # Para batch, mejor reportar que no se encontró si es relevante, 
+                            # o asumir éxito si el objetivo es que no esté.
+                            # Aquí reportaremos fallo para claridad.
+                            failed.append({"id": id_persona, "reason": "Persona no encontrada"})
+
+                except Exception as inner_e:
+                    failed.append({"id": id_persona, "reason": str(inner_e)})
+            
+            conn.commit()
+            return {"deleted_ids": deleted, "failed_ids": failed}
 
     except HTTPException:
         raise
     except Exception as e:
         conn.rollback()
-        logger.error(f"Error eliminando persona: {e}")
+        logger.error(f"Error eliminando personas: {e}")
         raise HTTPException(status_code=500, detail=str(e))
     finally:
         conn.close()

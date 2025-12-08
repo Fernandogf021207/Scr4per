@@ -1,10 +1,16 @@
 import os
 import sys
+import asyncio
+import platform
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from paths import STORAGE_DIR, ensure_dirs
 from src.utils.logging_config import setup_logging
+
+# Configurar Policy para Windows antes de cualquier otra cosa
+if platform.system() == 'Windows':
+    asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
 
 # Make repo root importable
 ROOT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
@@ -57,6 +63,7 @@ def create_app() -> FastAPI:
     from .routers.analyze import router as analyze_router
     from .routers.batch_analyze import router as batch_analyze_router
     from .routers.targets import router as targets_router
+    from .routers.realtime import router as realtime_router
 
     app.include_router(health_router)
     app.include_router(proxy_router)
@@ -74,6 +81,7 @@ def create_app() -> FastAPI:
     app.include_router(analyze_router)
     app.include_router(batch_analyze_router)
     app.include_router(targets_router)
+    app.include_router(realtime_router)
 
     return app
 

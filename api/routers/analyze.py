@@ -7,6 +7,7 @@ Este módulo maneja el ciclo de vida completo del análisis:
 3. Obtener resultados (grafo JSON desde FTP)
 """
 from typing import Optional, List
+from datetime import datetime
 from fastapi import APIRouter, HTTPException, BackgroundTasks
 import asyncio
 from ..schemas import (
@@ -20,6 +21,7 @@ from ..schemas_batch import (
 )
 from ..db import get_conn
 import logging
+from src.utils.event_manager import event_manager
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/analyze", tags=["analyze"])
@@ -75,6 +77,9 @@ def update_identidad_estado(conn, id_identidad: int, estado: str, id_caso: int):
             WHERE id_identidad = %s AND idcaso = %s
         """, (estado, id_identidad, id_caso))
         conn.commit()
+    
+    # Emitir evento SSE
+    asyncio.create_task(event_manager.broadcast_status(id_identidad, estado, id_caso))
 
 
 def update_identidad_resultado(conn, id_identidad: int, id_caso: int,
@@ -91,6 +96,9 @@ def update_identidad_resultado(conn, id_identidad: int, id_caso: int,
             WHERE id_identidad = %s AND idcaso = %s
         """, (id_perfil_scraped, ruta_grafo_ftp, id_identidad, id_caso))
         conn.commit()
+    
+    # Emitir evento SSE
+    asyncio.create_task(event_manager.broadcast_status(id_identidad, 'analizado', id_caso))
 
 
 def increment_intentos_fallidos(conn, id_identidad: int):
@@ -702,32 +710,135 @@ async def get_analysis_result(id_identidad: int):
         conn.close()
 
 
-@router.get("/graph/{id_identidad}")
-def get_analysis_graph(id_identidad: int):
+def _merge_graphs(graphs_data: List[dict]) -> dict:
+    """Fusiona múltiples grafos JSON en una estructura consolidada."""
+    merged = {
+        "schema_version": 2,
+        "root_profiles": [],
+        "profiles": [],
+        "relations": [],
+        "warnings": [],
+        "meta": {
+            "schema_version": 2,
+            "roots_requested": 0,
+            "roots_processed": 0,
+            "generated_at": datetime.now().isoformat(),
+            "roots_timings": {},
+            "platform_limits": {}
+        }
+    }
+    
+    profiles_map = {}
+    relations_set = set()
+    root_profiles_set = set()
+    
+    for g in graphs_data:
+        # Merge root_profiles
+        for rp in g.get("root_profiles", []):
+            if rp not in root_profiles_set:
+                merged["root_profiles"].append(rp)
+                root_profiles_set.add(rp)
+        
+        # Merge profiles
+        for p in g.get("profiles", []):
+            key = (p.get("platform"), p.get("username"))
+            if not key[0] or not key[1]:
+                continue
+                
+            if key not in profiles_map:
+                profiles_map[key] = p
+            else:
+                # Merge sources
+                existing_sources = set(profiles_map[key].get("sources", []))
+                new_sources = set(p.get("sources", []))
+                profiles_map[key]["sources"] = sorted(list(existing_sources | new_sources))
+                
+                # Merge other fields if needed (e.g. take the one with more info)
+                if not profiles_map[key].get("photo_url") and p.get("photo_url"):
+                    profiles_map[key]["photo_url"] = p.get("photo_url")
+                    
+        # Merge relations
+        for r in g.get("relations", []):
+            # Create a hashable representation
+            r_tuple = (r.get("platform"), r.get("source"), r.get("target"), r.get("type"))
+            if r_tuple not in relations_set:
+                merged["relations"].append(r)
+                relations_set.add(r_tuple)
+                
+        # Merge warnings
+        merged["warnings"].extend(g.get("warnings", []))
+        
+        # Merge meta
+        if "meta" in g:
+            merged["meta"]["roots_processed"] += g["meta"].get("roots_processed", 0)
+            if "roots_timings" in g["meta"]:
+                merged["meta"]["roots_timings"].update(g["meta"]["roots_timings"])
+
+    merged["profiles"] = list(profiles_map.values())
+    merged["meta"]["roots_requested"] = len(merged["root_profiles"])
+    
+    return merged
+
+
+@router.get("/graph/{identidades_ids}")
+def get_analysis_graph(identidades_ids: str, id_caso: int):
     """
-    Descarga el JSON del grafo desde el FTP.
+    Descarga y fusiona los JSON de los grafos desde el FTP.
+    Acepta un ID único o una lista separada por comas (ej: "29,27,26").
+    Requiere id_caso para identificar los análisis específicos.
     """
     conn = get_conn()
     try:
-        identidad = get_identidad_digital(conn, id_identidad)
-        if not identidad:
-            raise HTTPException(status_code=404, detail="Identidad no encontrada")
+        # 1. Parsear IDs
+        try:
+            ids_list = [int(x.strip()) for x in identidades_ids.split(',') if x.strip()]
+        except ValueError:
+             raise HTTPException(status_code=400, detail="Formato de IDs inválido. Debe ser una lista de enteros separados por comas.")
+        
+        if not ids_list:
+             raise HTTPException(status_code=400, detail="No se proporcionaron IDs válidos.")
+
+        # 2. Buscar estados y rutas en BD
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT id_identidad, estado, ruta_grafo_ftp
+                FROM casos.analisis_identidad
+                WHERE id_identidad = ANY(%s) AND idcaso = %s
+            """, (ids_list, id_caso))
+            analisis_rows = cur.fetchall()
+
+        if not analisis_rows:
+            raise HTTPException(status_code=404, detail="No se encontraron análisis para las identidades especificadas en este caso")
             
-        if identidad['estado'] != 'analizado' or not identidad['ruta_grafo_ftp']:
-            raise HTTPException(status_code=400, detail="Análisis no completado o archivo no disponible")
-            
+        # 3. Descargar y acumular grafos
         from src.utils.ftp_storage import get_ftp_client
         import json
         
         ftp = get_ftp_client()
-        try:
-            content = ftp.download_file(identidad['ruta_grafo_ftp'])
-            return json.loads(content)
-        except FileNotFoundError:
-            raise HTTPException(status_code=404, detail="Archivo de grafo no encontrado en FTP")
-        except Exception as e:
-            logger.error(f"Error descargando grafo: {e}")
-            raise HTTPException(status_code=500, detail="Error recuperando archivo del servidor")
+        graphs_data = []
+        
+        for row in analisis_rows:
+            if row['estado'] == 'analizado' and row['ruta_grafo_ftp']:
+                try:
+                    content = ftp.download_file(row['ruta_grafo_ftp'])
+                    graphs_data.append(json.loads(content))
+                except Exception as e:
+                    logger.error(f"Error descargando grafo {row['id_identidad']}: {e}")
+                    # Podríamos agregar un warning al resultado final en lugar de fallar todo
+            else:
+                # Análisis no listo o sin archivo
+                pass
+
+        if not graphs_data:
+             # Si pedimos varios y ninguno está listo, es un 404 o 400.
+             # Si al menos uno falló pero otros no, devolvemos lo que hay.
+             # Si la lista estaba vacía desde el principio (ninguno analizado), error.
+             raise HTTPException(status_code=404, detail="Ninguno de los análisis solicitados tiene un grafo disponible.")
+
+        # 4. Fusionar grafos
+        merged_graph = _merge_graphs(graphs_data)
+        
+        return merged_graph
             
     finally:
         conn.close()
