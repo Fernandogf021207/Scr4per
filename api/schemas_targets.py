@@ -47,7 +47,7 @@ class PersonaCreate(PersonaBase):
 
 class PersonaUpdate(BaseModel):
     """
-    Payload para editar solo datos biográficos.
+    Payload para editar datos biográficos y agregar identidades.
     Campos opcionales; si no se envían, no se cambian.
     """
     nombre: Optional[str] = None
@@ -59,6 +59,7 @@ class PersonaUpdate(BaseModel):
     tipo_sangre: Optional[str] = None
     datos_adicionales: Optional[Dict[str, Any]] = None
     foto: Optional[str] = None
+    identidades: Optional[List[IdentidadCreate]] = None
 
 class PersonaResponse(PersonaBase):
     id_persona: int
@@ -69,3 +70,11 @@ class PersonaResponse(PersonaBase):
 
     class Config:
         from_attributes = True
+
+class BatchDeleteRequest(BaseModel):
+    personas_ids: List[int]
+    id_caso: Optional[int] = None
+
+class BatchDeleteResponse(BaseModel):
+    deleted_ids: List[int]
+    failed_ids: List[Dict[str, Any]] # {id: 1, reason: "..."}

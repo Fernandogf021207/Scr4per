@@ -364,14 +364,29 @@ async def _scrape_single_profile(platform: str, username: str, max_photos: int, 
             logger.info(f"Obteniendo seguidos de {username}...")
             following = await adapter.get_following(username, max_photos, image_base_path=image_base_path)
             
-            # 3. Si es Facebook, obtener amigos
+            # 3. Si es Facebook, obtener amigos, reacciones y comentarios
             friends = []
+            reactors = []
+            commenters = []
+            
             if platform == 'facebook':
                 logger.info(f"Obteniendo amigos de {username}...")
                 try:
-                    friends = await adapter.get_friends(username) # Facebook adapter might need update too if implemented
+                    friends = await adapter.get_friends(username)
                 except Exception as e:
                     logger.warning(f"No se pudieron obtener amigos: {e}")
+                
+                logger.info(f"Obteniendo reacciones en fotos de {username}...")
+                try:
+                    reactors = await adapter.get_photo_reactors(username, max_photos, include_comment_reactions=False)
+                except Exception as e:
+                    logger.warning(f"No se pudieron obtener reacciones: {e}")
+                    
+                logger.info(f"Obteniendo comentarios en fotos de {username}...")
+                try:
+                    commenters = await adapter.get_photo_commenters(username, max_photos)
+                except Exception as e:
+                    logger.warning(f"No se pudieron obtener comentarios: {e}")
             
             # 4. Guardar en BD
             with conn.cursor() as cur:
@@ -423,17 +438,45 @@ async def _scrape_single_profile(platform: str, username: str, max_photos: int, 
                             photo_url=friend.get('photo_url')
                         )
                         add_relationship(cur, platform, username, friend['username'], 'friend')
+
+                # Relaciones - Reacciones (Facebook)
+                for reactor in reactors[:100]:
+                    if reactor.get('username') and reactor['username'] != username:
+                        upsert_profile(
+                            cur,
+                            platform=platform,
+                            username=reactor['username'],
+                            full_name=reactor.get('full_name'),
+                            profile_url=reactor.get('profile_url'),
+                            photo_url=reactor.get('photo_url')
+                        )
+                        add_relationship(cur, platform, username, reactor['username'], 'reacted')
+
+                # Relaciones - Comentarios (Facebook)
+                for commenter in commenters[:100]:
+                    if commenter.get('username') and commenter['username'] != username:
+                        upsert_profile(
+                            cur,
+                            platform=platform,
+                            username=commenter['username'],
+                            full_name=commenter.get('full_name'),
+                            profile_url=commenter.get('profile_url'),
+                            photo_url=commenter.get('photo_url')
+                        )
+                        add_relationship(cur, platform, username, commenter['username'], 'commented')
                 
                 conn.commit()
             
-            logger.info(f"Scraping completado: {len(followers)} seguidores, {len(following)} seguidos, {len(friends)} amigos")
+            logger.info(f"Scraping completado: {len(followers)} seguidores, {len(following)} seguidos, {len(friends)} amigos, {len(reactors)} reacciones, {len(commenters)} comentarios")
             
             return {
                 'profile_id': profile_id,
                 'profile': root_profile,
                 'followers_count': len(followers),
                 'following_count': len(following),
-                'friends_count': len(friends)
+                'friends_count': len(friends),
+                'reactors_count': len(reactors),
+                'commenters_count': len(commenters)
             }
             
         finally:

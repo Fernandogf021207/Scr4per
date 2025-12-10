@@ -31,7 +31,7 @@ class BatchAnalysisRequest(BaseModel):
     context: UserContext
     
     # Parámetros opcionales del scraping
-    max_photos: int = Field(5, ge=0, le=50)
+    max_photos: int = Field(10, ge=0, le=50)
     headless: bool = True
     max_depth: int = Field(2, ge=1, le=3)
 

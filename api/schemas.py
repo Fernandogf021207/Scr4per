@@ -247,6 +247,9 @@ class AnalysisRequest(BaseModel):
     """
     id_identidad: int = Field(..., description="ID de la identidad digital a analizar")
     context: UserContext
+    max_photos: int = Field(10, ge=1, le=50, description="Número máximo de fotos a analizar")
+    headless: bool = Field(True, description="Ejecutar navegador en modo headless")
+    max_depth: int = Field(1, ge=1, le=3, description="Profundidad de análisis (1=solo perfil, 2=amigos)")
     
     # Parámetros opcionales del scraping
     max_photos: int = Field(5, ge=0, le=50)
