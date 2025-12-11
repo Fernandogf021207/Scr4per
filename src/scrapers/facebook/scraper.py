@@ -107,12 +107,16 @@ async def extraer_usuarios_listado(page, tipo_lista: str, usuario_principal: str
 		js = '''
 		() => {
 		  const root = document.querySelector('div[role="main"]') || document;
-		  const anchors = Array.from(root.querySelectorAll('a[href^="/"]'));
+		  // Select all anchors with href (some lists use absolute URLs)
+		  const anchors = Array.from(root.querySelectorAll('a[href]'));
 		  const out = [];
 		  for (const a of anchors) {
 			const href = a.getAttribute('href') || '';
+			if (!href) continue;
+			// normalize potential javascript:void or anchors
+			if (href.startsWith('javascript:') || href === '#') continue;
 			// excluir rutas obvias no-perfil y estados
-			if (!href || href.includes('/status/') || href.includes('/groups/') || href.includes('/events/')) continue;
+			if (href.includes('/status/') || href.includes('/groups/') || href.includes('/events/')) continue;
 			const text = (a.textContent || '').trim();
 			let img = '';
 			const cont = a.closest('div');
@@ -174,10 +178,14 @@ async def extraer_usuarios_listado(page, tipo_lista: str, usuario_principal: str
 			pass
 		return added
 
+	# Facebook lists work better with simple window scroll (not container)
+	# Force container=None to use window scroll like the manual script
+	container = None
+
 	await scroll_collect(
 		page,
 		process_cb,
-		container=None,  # listado usa scroll de ventana
+		container=None,  # Always use window scroll for Facebook lists
 		max_scrolls=max_scrolls,
 		pause_ms=pause_ms,
 		no_new_threshold=max_no_new,
@@ -270,7 +278,7 @@ async def procesar_tarjetas_usuario(page, usuarios: Dict[str, dict], usuario_pri
 
 # ---------- API públicas ----------
 async def scrap_friends_all(page, perfil_url: str, username: str) -> List[dict]:
-	if not await navegar_a_lista(page, perfil_url, 'friends_all'):
+	if not await navegar_a_lista(page, perfil_url, 'friends'):
 		return []
 	# Preferir extractor específico basado en estructura aportada
 	return await extraer_amigos_facebook(page, username)
@@ -573,33 +581,52 @@ async def procesar_usuarios_en_modal_reacciones(page, reacciones_dict: Dict[str,
 
 
 async def abrir_y_scrapear_modal_reacciones(page, reacciones_dict: Dict[str, dict], photo_url: str):
-	"""Abre el modal de reacciones de la foto y extrae usuarios."""
-	botones = [
-		'div[role="button"]:has-text("Ver quién reaccionó")',  # Español
-		'div[role="button"]:has-text("See who reacted")',      # Inglés
-		'a[role="button"]:has-text("reaccion")',
-		'div[role="button"][aria-label*="reaccion"]',
-		'div[role="button"][aria-label*="react"]',
-	]
-	for sel in botones:
+	"""Abre el modal de reacciones de la foto y extrae usuarios.
+	
+	Busca el botón div[role="button"] que contiene "Todas las reacciones:".
+	Excluye botones dentro de comentarios (div[role="article"]).
+	"""
+	try:
+		# Usar JavaScript para encontrar y clickear el botón "Todas las reacciones:"
+		clicked = await page.evaluate('''
+			() => {
+				// Buscar todos los botones con role="button"
+				const botones = Array.from(document.querySelectorAll('div[role="button"]'));
+				
+				// Buscar el que contiene "Todas las reacciones:" o "All reactions:"
+				for (const btn of botones) {
+					const texto = btn.textContent || '';
+					if (texto.includes('Todas las reacciones:') || texto.includes('All reactions:')) {
+						// Verificar que NO esté dentro de un comentario (article)
+						const dentroComentario = btn.closest('div[role="article"][aria-label*="Comentario"], div[role="article"][aria-label*="Comment"]');
+						if (!dentroComentario) {
+							// Este es el botón de la foto
+							btn.click();
+							return true;
+						}
+					}
+				}
+				return false;
+			}
+		''')
+		
+		if not clicked:
+			return False
+		
+		await page.wait_for_timeout(1500)
+		await procesar_usuarios_en_modal_reacciones(page, reacciones_dict, photo_url)
+		
+		# Cerrar modal
 		try:
-			btn = await page.query_selector(sel)
-			if btn:
-				await btn.click()
-				await page.wait_for_timeout(1500)
-				await procesar_usuarios_en_modal_reacciones(page, reacciones_dict, photo_url)
-				# Cerrar modal
-				try:
-					close_btn = await page.query_selector('div[role="dialog"] [aria-label*="Cerrar"], div[role="dialog"] [aria-label*="Close"]')
-					if close_btn:
-						await close_btn.click()
-						await page.wait_for_timeout(500)
-				except Exception:
-					pass
-				return True
+			close_btn = await page.query_selector('div[role="dialog"] [aria-label*="Cerrar"], div[role="dialog"] [aria-label*="Close"]')
+			if close_btn:
+				await close_btn.click()
+				await page.wait_for_timeout(500)
 		except Exception:
-			continue
-	return False
+			pass
+		return True
+	except Exception:
+		return False
 
 
 async def abrir_y_scrapear_reacciones_en_comentarios(page, reacciones_dict: Dict[str, dict], photo_url: str):
@@ -676,62 +703,54 @@ async def scrap_reacciones_fotos(page, perfil_url: str, username: str, max_fotos
 
 # ---------- Comentarios en fotos ----------
 async def procesar_comentarios_en_modal_foto(page, comentarios_dict: Dict[str, dict], photo_url: str):
-	"""Busca perfiles de personas en la sección de comentarios del modal de fotos."""
+	"""Busca perfiles de personas en la sección de comentarios del modal de fotos.
+	
+	Busca divs con role="article" y aria-label que contiene "Comentario de".
+	Dentro de cada comentario, busca un elemento con aria-hidden y href al perfil.
+	"""
 	try:
-		# 1) Ubicar bloques de comentario (role=article) dentro o fuera del dialog
-		selectores_articulo = [
-			'div[role="dialog"] [role="article"][aria-label^="Comentario"]',
-			'div[role="dialog"] [role="article"]',
-			'[role="article"][aria-label^="Comentario"]',
-			'[role="article"]',
-		]
-		articulos = []
-		for s in selectores_articulo:
-			try:
-				articulos = await page.query_selector_all(s)
-			except Exception:
-				articulos = []
-			if articulos:
-				break
-
+		# Buscar artículos de comentarios (role="article" y aria-label contiene "Comentario de")
+		articulos = await page.query_selector_all('div[role="article"][aria-label*="Comentario de"], div[role="article"][aria-label*="Comment by"]')
+		
 		if not articulos:
+			logger.debug("No se encontraron comentarios en la foto")
 			return
 
 		for art in articulos:
 			try:
-				# Dentro del artículo, priorizar el ancla visible con el nombre del usuario
-				candidatos = []
-				for sel in [
-					'a[role="link"][aria-hidden="false"]',
-					'a[role="link"]',
-					'a[href^="https://www.facebook.com/"]',
-					'a[href^="/"]',
-				]:
-					try:
-						cand = await art.query_selector_all(sel)
-					except Exception:
-						cand = []
-					if cand:
-						candidatos.extend(cand)
-
+				# Dentro del artículo, buscar el enlace con aria-hidden que apunta al perfil
+				# Ejemplo: <a aria-hidden="true" href="https://www.facebook.com/alejandro.mj.211997?comment_id=...">
+				enlaces = await art.query_selector_all('a[aria-hidden="true"][href*="facebook.com"]')
+				
+				if not enlaces:
+					# Fallback: buscar cualquier enlace al perfil
+					enlaces = await art.query_selector_all('a[href*="facebook.com"]')
+				
 				elegido = None
-				for e in candidatos:
+				for e in enlaces:
 					try:
 						href = await get_attr(e, 'href')
 						if not href:
 							continue
-						# Saltar anchors de timestamp que apuntan a la foto con comment_id
-						if ('/photo/?' in href) or ('/photo.php' in href and 'fbid=' in href and 'comment_id' in href):
-							continue
-						# Normalizar a perfil
-						url = normalize_profile_url(href)
+						
+						# Ignorar enlaces que apuntan a la foto misma con comment_id
+						# pero extraer el perfil del usuario del parámetro
+						if 'comment_id=' in href:
+							# Extraer la parte del perfil antes del ?
+							url_base = href.split('?')[0]
+							url = normalize_profile_url(url_base)
+						else:
+							url = normalize_profile_url(href)
+						
 						if not url or 'facebook.com' not in url:
 							continue
-						if any(x in url for x in ["/groups/", "/pages/", "/events/"]):
+						if any(x in url for x in ["/groups/", "/pages/", "/events/", "/photo"]):
 							continue
+						
 						username = url.split('facebook.com/')[-1].strip('/')
 						if username in ("", "photo.php"):
 							continue
+						
 						elegido = (e, url, username)
 						break
 					except Exception:
@@ -744,23 +763,37 @@ async def procesar_comentarios_en_modal_foto(page, comentarios_dict: Dict[str, d
 				if url in comentarios_dict:
 					continue
 
-				nombre = await get_text(e)
+				# Obtener nombre del autor del comentario desde el aria-label del article
+				try:
+					aria_label = await art.get_attribute('aria-label')
+					# Ejemplo: "Comentario de Alejandro MJ hace aproximadamente una hora"
+					if aria_label and 'Comentario de ' in aria_label:
+						nombre = aria_label.replace('Comentario de ', '').split(' hace ')[0]
+					elif aria_label and 'Comment by ' in aria_label:
+						nombre = aria_label.replace('Comment by ', '').split(' · ')[0]
+					else:
+						nombre = await get_text(e) or username
+				except Exception:
+					nombre = await get_text(e) or username
+
 				foto = ''
 				try:
-					cont = await e.evaluate_handle('el => el.closest("div")')
-					img = await cont.query_selector('img, image') if cont else None
+					# Buscar imagen del perfil dentro del article
+					img = await art.query_selector('img[src*="scontent"], image')
 					src = await get_attr(img, 'src') or await get_attr(img, 'xlink:href')
 					if src and not src.startswith('data:'):
 						foto = src
 				except Exception:
 					pass
 
-				item = build_user_item('facebook', url, nombre or username, foto or '')
+				item = build_user_item('facebook', url, nombre, foto or '')
 				item['post_url'] = normalize_post_url('facebook', photo_url)
 				comentarios_dict[url] = item
-			except Exception:
+			except Exception as e:
+				logger.debug(f"Error procesando comentario: {e}")
 				continue
-	except Exception:
+	except Exception as e:
+		logger.warning(f"Error en procesar_comentarios_en_modal_foto: {e}")
 		return
 
 

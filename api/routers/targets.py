@@ -150,25 +150,13 @@ def update_persona(id_persona: int, payload: PersonaUpdate):
                 update_fields.append("datos_adicionales = %s")
                 params.append(json.dumps(payload.datos_adicionales))
 
-            if not update_fields and not payload.identidades:
-                # Nada que actualizar
+            if not update_fields:
+                # Nada que actualizar, devolver actual
                 pass
             else:
-                if update_fields:
-                    query = f"UPDATE entidades.personas SET {', '.join(update_fields)} WHERE id_persona = %s"
-                    params.append(id_persona)
-                    cur.execute(query, tuple(params))
-                
-                # Actualizar identidades (Upsert)
-                if payload.identidades:
-                    for ident in payload.identidades:
-                        cur.execute("""
-                            INSERT INTO entidades.identidades_digitales
-                            (id_persona, plataforma, usuario_o_url)
-                            VALUES (%s, %s, %s)
-                            ON CONFLICT (id_persona, plataforma, usuario_o_url) DO NOTHING
-                        """, (id_persona, ident.plataforma, ident.usuario_o_url))
-                
+                query = f"UPDATE entidades.personas SET {', '.join(update_fields)} WHERE id_persona = %s"
+                params.append(id_persona)
+                cur.execute(query, tuple(params))
                 conn.commit()
 
             # Obtener persona actualizada con identidades
