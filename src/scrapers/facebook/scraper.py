@@ -13,12 +13,85 @@ from src.utils.url import normalize_input_url, normalize_post_url
 logger = logging.getLogger(__name__)
 
 
+# ---------- Helper: Cerrar modales molestos ----------
+async def cerrar_modal_bloqueante(page, max_intentos: int = 3):
+	"""
+	Cierra modales/popups que bloquean la interacción en Facebook.
+	Intenta hacer click en la página para cerrar el popup.
+	"""
+	for intento in range(max_intentos):
+		try:
+			# Verificar si hay un modal presente
+			modal_presente = await page.query_selector('div[role="dialog"], div[aria-modal="true"]')
+			
+			if modal_presente:
+				# Estrategia 1: Click en el centro de la página (fuera del modal)
+				try:
+					viewport = await page.viewport_size()
+					if viewport:
+						# Click en el centro de la página
+						await page.mouse.click(viewport['width'] // 2, viewport['height'] // 2)
+						await page.wait_for_timeout(500)
+						logger.info("Click en página para cerrar modal (centro)")
+						
+						# Verificar si el modal se cerró
+						modal_despues = await page.query_selector('div[role="dialog"], div[aria-modal="true"]')
+						if not modal_despues:
+							return True
+				except Exception as e:
+					logger.debug(f"Click en centro falló: {e}")
+				
+				# Estrategia 2: Click en body o elemento principal
+				try:
+					await page.click('body', timeout=1000)
+					await page.wait_for_timeout(300)
+					logger.info("Click en body para cerrar modal")
+					
+					# Verificar si el modal se cerró
+					modal_despues = await page.query_selector('div[role="dialog"], div[aria-modal="true"]')
+					if not modal_despues:
+						return True
+				except Exception:
+					pass
+				
+				# Estrategia 3: Click en el main content
+				try:
+					main_content = await page.query_selector('div[role="main"]')
+					if main_content:
+						await main_content.click()
+						await page.wait_for_timeout(300)
+						logger.info("Click en main content para cerrar modal")
+						
+						# Verificar si el modal se cerró
+						modal_despues = await page.query_selector('div[role="dialog"], div[aria-modal="true"]')
+						if not modal_despues:
+							return True
+				except Exception:
+					pass
+			
+			# Estrategia 4: Presionar Escape como fallback
+			try:
+				await page.keyboard.press('Escape')
+				await page.wait_for_timeout(300)
+				logger.debug("Presionado Escape para cerrar modal")
+				return True
+			except Exception:
+				pass
+				
+		except Exception as e:
+			logger.debug(f"Intento {intento + 1} de cerrar modal falló: {e}")
+			
+	return False
+
+
 # ---------- Perfil principal ----------
 async def obtener_datos_usuario_facebook(page, perfil_url: str) -> dict:
 	"""Obtiene nombre, username (slug o id) y foto del perfil principal."""
 	perfil_url = normalize_input_url('facebook', perfil_url)
 	await page.goto(perfil_url)
 	await page.wait_for_timeout(3000)
+	# Cerrar modal bloqueante si aparece
+	await cerrar_modal_bloqueante(page)
 
 	# Intentar obtener nombre
 	nombre = None
@@ -84,7 +157,9 @@ async def navegar_a_lista(page, perfil_url: str, lista: str) -> bool:
 	target = f"{base}/{suffix}/"
 	try:
 		await page.goto(target)
-		await page.wait_for_timeout(3000)
+		await page.wait_for_timeout(5000)
+		# Cerrar modal bloqueante si aparece
+		await cerrar_modal_bloqueante(page)
 		return True
 	except Exception as e:
 		logger.error(f"No se pudo navegar a {lista}: {e}")
@@ -100,7 +175,7 @@ async def extraer_usuarios_listado(page, tipo_lista: str, usuario_principal: str
 
 	cfg = FACEBOOK_CONFIG.get('scroll', {})
 	max_scrolls = int(cfg.get('max_scrolls', 60))
-	pause_ms = int(cfg.get('pause_ms', 1500))
+	pause_ms = int(cfg.get('pause_ms', 3500))
 	max_no_new = int(cfg.get('max_no_new', 6))
 
 	async def _extract_visible_batch(page_) -> List[dict]:
@@ -391,6 +466,8 @@ async def navegar_a_fotos(page, perfil_url: str) -> bool:
 		try:
 			await page.goto(f"{base}/{suf}/")
 			await page.wait_for_timeout(2500)
+			# Cerrar modal bloqueante si aparece
+			await cerrar_modal_bloqueante(page)
 			# Heurística mínima: verificar si hay imágenes/enlaces a photo.php
 			has_photos = await page.query_selector('a[href*="photo.php"], a[href*="/photos/"] img, img[src*="scontent"]')
 			if has_photos:
@@ -510,6 +587,8 @@ async def _open_photo_in_new_tab(page, photo_url: str):
 		await newp.goto(photo_url)
 		# Pequeña espera para que cargue el DOM
 		await newp.wait_for_timeout(1000)
+		# Cerrar modal bloqueante si aparece en la nueva pestaña
+		await cerrar_modal_bloqueante(newp)
 		return newp
 	except Exception:
 		try:
@@ -573,7 +652,7 @@ async def procesar_usuarios_en_modal_reacciones(page, reacciones_dict: Dict[str,
 			process_cb,
 			container=container,
 			max_scrolls=50,
-			pause_ms=900,
+			pause_ms=2900,
 			no_new_threshold=6,
 		)
 	except Exception:

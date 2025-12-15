@@ -27,7 +27,7 @@ async def extraer_usuarios_lista(page, tipo_lista="seguidores"):
     no_new_content_count = 0
     max_no_new_content = 5
 
-    await page.wait_for_timeout(2000)
+    await page.wait_for_timeout(4000)
 
     async def _extract_visible_batch(page_):
         js = '''
@@ -139,7 +139,7 @@ async def extraer_comentadores_x(page, max_posts=10):
     max_no_new_content = 5
     posts_encontrados = 0
     
-    await page.wait_for_timeout(3000)
+    await page.wait_for_timeout(5000)
     
     while scroll_attempts < max_scroll_attempts and posts_encontrados < max_posts:
         try:
@@ -151,7 +151,7 @@ async def extraer_comentadores_x(page, max_posts=10):
                     break
                 logger.info("No se encontraron posts en scroll %d", scroll_attempts + 1)
                 await scroll_window(page, 0)
-                await page.wait_for_timeout(2000)
+                await page.wait_for_timeout(4000)
                 scroll_attempts += 1
                 continue
             
@@ -172,11 +172,11 @@ async def extraer_comentadores_x(page, max_posts=10):
                     
                     scroll_position = await page.evaluate("window.pageYOffset")
                     await page.goto(post_url)
-                    await page.wait_for_timeout(5000)
+                    await page.wait_for_timeout(7000)
                     
                     for _ in range(3):
                         await scroll_window(page, 0)
-                        await page.wait_for_timeout(2000)
+                        await page.wait_for_timeout(4000)
                     
                     comment_selectors = [
                         'div[data-testid="tweet"]:has(a[role="link"][href^="/"])',

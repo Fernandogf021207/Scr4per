@@ -78,7 +78,7 @@ async def obtener_datos_usuario_principal(page, perfil_url):
     logger.info("Obteniendo datos del perfil principal de Instagram...")
     perfil_url = normalize_input_url('instagram', perfil_url)
     await page.goto(perfil_url)
-    await page.wait_for_timeout(5000)
+    await page.wait_for_timeout(7000)
     
     datos_usuario_ig = await obtener_nombre_usuario_instagram(page)
     username = datos_usuario_ig['username']
@@ -147,7 +147,7 @@ async def extraer_usuarios_instagram(page, tipo_lista="seguidores", usuario_prin
                     waited += 200
             except Exception:
                 # Fallback a pequeña espera fija
-                await page.wait_for_timeout(400)
+                await page.wait_for_timeout(2400)
 
             # Procesar usuarios después del scroll
             await procesar_usuarios_en_modal(page, usuarios_dict, usuario_principal, tipo_lista)
@@ -166,7 +166,7 @@ async def extraer_usuarios_instagram(page, tipo_lista="seguidores", usuario_prin
             # Pausa cada 12 scrolls para evitar rate limiting
             if scroll_attempts % 12 == 0:
                 logger.info("Pausa breve para evitar rate limiting... (%d usuarios hasta ahora)", len(usuarios_dict))
-                await page.wait_for_timeout(1500)
+                await page.wait_for_timeout(3500)
 
             # Extender dinámicamente el máximo si seguimos añadiendo a última hora
             if scroll_attempts >= max_scrolls - 2 and recent_additions >= 2 and max_scrolls < 120:

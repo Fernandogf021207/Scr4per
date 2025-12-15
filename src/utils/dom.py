@@ -131,7 +131,7 @@ async def scroll_collect(
     *,
     container=None,
     max_scrolls: int = 60,
-    pause_ms: int = 1500,
+    pause_ms: int = 3500,
     no_new_threshold: int = 6,
     bottom_margin: int = 800,
     pause_every: int | None = None,

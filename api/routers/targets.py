@@ -117,6 +117,8 @@ def create_persona_atomic(payload: PersonaCreate):
 def update_persona(id_persona: int, payload: PersonaUpdate):
     """
     Actualiza datos biográficos de la persona.
+    Los campos enviados se actualizan (incluso si son null).
+    Los campos no enviados se mantienen sin cambios.
     """
     conn = get_conn()
     try:
@@ -126,29 +128,26 @@ def update_persona(id_persona: int, payload: PersonaUpdate):
             if not cur.fetchone():
                 raise HTTPException(status_code=404, detail="Persona no encontrada")
 
-            # Construir query dinámica
+            # Construir query dinámica solo con campos enviados explícitamente
             update_fields = []
             params = []
             
-            fields_map = {
-                'nombre': payload.nombre,
-                'apellido_paterno': payload.apellido_paterno,
-                'apellido_materno': payload.apellido_materno,
-                'curp': payload.curp,
-                'rfc': payload.rfc,
-                'fecha_nacimiento': payload.fecha_nacimiento,
-                'tipo_sangre': payload.tipo_sangre,
-                'foto': payload.foto
-            }
-
-            for field, value in fields_map.items():
-                if value is not None:
+            # Obtener solo los campos que fueron enviados en el request
+            payload_dict = payload.dict(exclude_unset=True)
+            
+            # Campos biográficos actualizables
+            bio_fields = ['nombre', 'apellido_paterno', 'apellido_materno', 'curp', 'rfc', 
+                         'fecha_nacimiento', 'tipo_sangre', 'foto']
+            
+            for field in bio_fields:
+                if field in payload_dict:
                     update_fields.append(f"{field} = %s")
-                    params.append(value)
+                    params.append(payload_dict[field])
 
-            if payload.datos_adicionales is not None:
+            # datos_adicionales (JSON)
+            if 'datos_adicionales' in payload_dict:
                 update_fields.append("datos_adicionales = %s")
-                params.append(json.dumps(payload.datos_adicionales))
+                params.append(json.dumps(payload_dict['datos_adicionales']))
 
             # Ejecutar UPDATE solo si hay campos a modificar
             if update_fields:
@@ -157,8 +156,8 @@ def update_persona(id_persona: int, payload: PersonaUpdate):
                 cur.execute(query, tuple(params))
 
             # Upsert de identidades si vienen en el payload
-            if payload.identidades:
-                for ident in payload.identidades:
+            if 'identidades' in payload_dict and payload_dict['identidades']:
+                for ident in payload_dict['identidades']:
                     cur.execute("""
                         INSERT INTO entidades.identidades_digitales
                         (id_persona, plataforma, usuario_o_url)
