@@ -2,15 +2,159 @@ import asyncio
 import logging
 from typing import Dict, List, Optional
 import urllib.parse
+from playwright.async_api import Browser, BrowserContext, Page, async_playwright
 
-from src.scrapers.facebook.config import FACEBOOK_CONFIG
+from src.scrapers.facebook.config import facebook_config
+from src.scrapers.facebook.navigation import FacebookNavigation
 from src.scrapers.facebook.utils import normalize_profile_url, get_text, get_attr, absolute_url_keep_query
 from src.utils.dom import find_scroll_container, scroll_collect
 from src.utils.list_parser import build_user_item
 from src.utils.common import limpiar_url
 from src.utils.url import normalize_input_url, normalize_post_url
+from src.utils.exceptions import SessionExpiredException, AccountBannedException
 
 logger = logging.getLogger(__name__)
+
+
+class FacebookScraperManager:
+	"""
+	Gestor de sesión para el scraper de Facebook.
+	Maneja la inyección de cookies/proxy desde la DB y validación early exit.
+	"""
+	
+	def __init__(self):
+		"""Inicializa el gestor del scraper."""
+		self.playwright = None
+		self.browser: Optional[Browser] = None
+		self.context: Optional[BrowserContext] = None
+		self.page: Optional[Page] = None
+		self.session_id: Optional[int] = None
+	
+	async def start(
+		self,
+		storage_state: dict,
+		proxy_url: Optional[str] = None,
+		user_agent: Optional[str] = None,
+		session_id: Optional[int] = None,
+		headless: bool = True
+	):
+		"""
+		Inicia el navegador con las credenciales inyectadas desde la DB.
+		
+		Args:
+			storage_state: Diccionario con cookies de Playwright (storage_state)
+			proxy_url: URL del proxy (opcional)
+			user_agent: User agent personalizado (opcional)
+			session_id: ID de la sesión en la DB (para logging)
+			headless: Ejecutar en modo headless
+		"""
+		self.session_id = session_id
+		self.playwright = await async_playwright().start()
+		
+		# Configurar opciones del navegador
+		browser_options = {
+			'headless': headless,
+		}
+		
+		# Configurar opciones del contexto
+		context_options = {
+			'storage_state': storage_state,
+			'user_agent': user_agent or facebook_config.user_agent,
+			'viewport': {'width': 1920, 'height': 1080},
+		}
+		
+		# Agregar proxy si se proporciona
+		if proxy_url:
+			context_options['proxy'] = {'server': proxy_url}
+		
+		# Iniciar navegador y contexto
+		self.browser = await self.playwright.chromium.launch(**browser_options)
+		self.context = await self.browser.new_context(**context_options)
+		self.page = await self.context.new_page()
+		
+		logger.info(f"FacebookScraperManager iniciado (session_id={session_id}, headless={headless})")
+	
+	async def close(self):
+		"""Cierra el navegador y limpia recursos."""
+		if self.page:
+			await self.page.close()
+		if self.context:
+			await self.context.close()
+		if self.browser:
+			await self.browser.close()
+		if self.playwright:
+			await self.playwright.stop()
+		
+		logger.info("FacebookScraperManager cerrado")
+	
+	async def _validate_session_integrity(self) -> bool:
+		"""
+		Valida la integridad de la sesión navegando a Facebook y verificando
+		que no se redirija a login o checkpoint.
+		
+		Returns:
+			True si la sesión es válida
+			
+		Raises:
+			SessionExpiredException: Si detecta página de login
+			AccountBannedException: Si detecta checkpoint/baneo
+		"""
+		if not self.page:
+			raise RuntimeError("El navegador no está iniciado. Llama a start() primero.")
+		
+		try:
+			# Navegar a la página principal de Facebook
+			logger.info("Validando integridad de sesión...")
+			await self.page.goto(facebook_config.base_url, timeout=facebook_config.timeout_navigation)
+			await self.page.wait_for_timeout(2000)
+			
+			# Obtener URL actual
+			current_url = self.page.url
+			
+			# Verificar si es página de login
+			if FacebookNavigation.is_login_url(current_url):
+				logger.error(f"Sesión expirada: redirigido a login ({current_url})")
+				raise SessionExpiredException(
+					platform='facebook',
+					message=f"La sesión expiró - redirigido a: {current_url}"
+				)
+			
+			# Verificar si es checkpoint/baneo
+			if FacebookNavigation.is_checkpoint_url(current_url):
+				logger.error(f"Cuenta con restricciones: checkpoint detectado ({current_url})")
+				raise AccountBannedException(
+					platform='facebook',
+					message=f"Cuenta con restricciones - checkpoint: {current_url}"
+				)
+			
+			# Verificar elementos de login en la página
+			login_form = await self.page.query_selector('input[name="email"], input[type="email"]')
+			if login_form:
+				logger.error("Sesión expirada: formulario de login detectado")
+				raise SessionExpiredException(
+					platform='facebook',
+					message="La sesión expiró - formulario de login presente"
+				)
+			
+			logger.info("✅ Sesión validada correctamente")
+			return True
+			
+		except (SessionExpiredException, AccountBannedException):
+			raise
+		except Exception as e:
+			logger.error(f"Error al validar sesión: {e}")
+			raise RuntimeError(f"Error inesperado al validar sesión: {e}")
+	
+	def get_page(self) -> Page:
+		"""
+		Retorna la página actual para usar con las funciones existentes.
+		
+		Returns:
+			Page de Playwright
+		"""
+		if not self.page:
+			raise RuntimeError("El navegador no está iniciado. Llama a start() primero.")
+		return self.page
 
 
 # ---------- Helper: Cerrar modales molestos ----------
@@ -173,10 +317,9 @@ async def extraer_usuarios_listado(page, tipo_lista: str, usuario_principal: str
 	"""
 	usuarios: Dict[str, dict] = {}
 
-	cfg = FACEBOOK_CONFIG.get('scroll', {})
-	max_scrolls = int(cfg.get('max_scrolls', 60))
-	pause_ms = int(cfg.get('pause_ms', 3500))
-	max_no_new = int(cfg.get('max_no_new', 6))
+	max_scrolls = facebook_config.max_scrolls
+	pause_ms = facebook_config.scroll_pause_ms
+	max_no_new = facebook_config.max_no_new
 
 	async def _extract_visible_batch(page_) -> List[dict]:
 		js = '''

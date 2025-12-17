@@ -152,6 +152,22 @@ class FTPClient:
             finally:
                 self.connection = None
     
+    def check_connection(self) -> bool:
+        """
+        Verifica la conectividad con el servidor FTP.
+        
+        Returns:
+            True si la conexión es exitosa, False en caso contrario
+        """
+        try:
+            ftp = self._connect()
+            ftp.voidcmd("NOOP")
+            logger.info("FTP connection check successful")
+            return True
+        except Exception as e:
+            logger.error(f"FTP connection check failed: {e}")
+            return False
+    
     def _sanitize_path(self, path_part: str) -> str:
         """
         Sanitize path component to prevent path traversal attacks.
