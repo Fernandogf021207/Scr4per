@@ -4,7 +4,10 @@ from typing import Optional
 import httpx
 from urllib.parse import quote_plus, urlencode
 import asyncio
+import logging
 from paths import IMAGES_DIR, PUBLIC_IMAGES_PREFIX_PRIMARY, ensure_dirs
+
+logger = logging.getLogger(__name__)
 
 
 def _safe_filename(name: str) -> str:
@@ -184,6 +187,7 @@ async def download_profile_image(
                 pass
         # Final fallback policy
         if on_failure == "proxy":
+            logger.info(f"download_profile_image fallback to proxy username={username}")
             return f"/proxy-image?{urlencode({'url': photo_url})}"
         if on_failure == "raise":
             raise RuntimeError("Failed to download image and no fallback allowed")

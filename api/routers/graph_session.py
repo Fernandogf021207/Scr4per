@@ -24,7 +24,9 @@ def load_graph_session(platform: Literal['x','instagram','facebook'], owner_user
                 """, (owner_username,))
                 row = cur.fetchone()
                 if not row:
-                    return {"elements": None}
+                    # 404 is clearer for caller than silently returning null
+                    from fastapi import status
+                    raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="graph_session not found")
                 elements = row.get('elements')
                 path = row.get('elements_path')
                 
@@ -49,8 +51,8 @@ def load_graph_session(platform: Literal['x','instagram','facebook'], owner_user
                 # Fallback to local file if path is old format
                 elif path:
                     try:
-                        root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
-                        full_path = os.path.join(root, path) if not os.path.isabs(path) else path
+                        # paths.elements_path is stored relative to REPO_ROOT
+                        full_path = path if os.path.isabs(path) else os.path.join(REPO_ROOT, path)
                         with open(full_path, 'r', encoding='utf-8') as fh:
                             elements = json.load(fh)
                     except Exception:

@@ -2,6 +2,7 @@ import os
 import sys
 import asyncio
 import platform
+import logging
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -21,6 +22,19 @@ def create_app() -> FastAPI:
     # Configure logging early
     setup_logging()
     app = FastAPI(title="Scr4per DB API", version="0.1.0")
+
+    # Ensure logging configured (scripts call setup_logging, API didn't)
+    try:
+        # Avoid reconfiguring if already handled by uvicorn or previous setup
+        if not logging.getLogger().handlers:
+            from src.utils.logging_config import setup_logging  # type: ignore
+            setup_logging()
+        else:
+            # Raise root level if default WARNING so our scraper INFO logs show
+            if logging.getLogger().level > logging.INFO:
+                logging.getLogger().setLevel(logging.INFO)
+    except Exception as e:  # pragma: no cover
+        logging.getLogger(__name__).warning(f"logging setup skip error={e}")
 
     # CORS
     _default_frontend_origins = [
