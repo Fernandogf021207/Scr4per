@@ -78,103 +78,7 @@ async def obtener_datos_usuario_principal(page, perfil_url):
     logger.info("Obteniendo datos del perfil principal de Instagram...")
     perfil_url = normalize_input_url('instagram', perfil_url)
     await page.goto(perfil_url)
-    await page.wait_for_timeout(5000)
-    
-    datos_usuario_ig = await obtener_nombre_usuario_instagram(page)
-    username = datos_usuario_ig['username']
-    nombre_completo = datos_usuario_ig['nombre_completo']
-    foto_perfil = await obtener_foto_perfil_instagram(page)
-    
-    logger.info("Usuario detectado: @%s (%s)", username, nombre_completo)
-    
-    return {
-    'username': username,
-    'nombre_completo': nombre_completo,
-    'foto_perfil': foto_perfil or "",
-    'url_usuario': perfil_url
-    }
-
-import asyncio
-import logging
-from urllib.parse import urljoin
-from src.utils.common import limpiar_url
-from src.utils.url import normalize_input_url
-from src.utils.dom import find_scroll_container, scroll_element, scroll_window
-from src.utils.list_parser import build_user_item
-from src.utils.url import normalize_post_url
-import os
-import httpx
-
-logger = logging.getLogger(__name__)
-
-async def obtener_foto_perfil_instagram(page):
-    """Intentar obtener la foto de perfil del usuario principal de Instagram"""
-    try:
-        selectores_foto = [
-            'img[alt*="foto de perfil"]',
-            'img[data-testid="user-avatar"]',
-            'header img',
-            'article header img',
-            'div[role="button"] img',
-        ]
-        
-        for selector in selectores_foto:
-            foto_element = await page.query_selector(selector)
-            if foto_element:
-                src = await foto_element.get_attribute("src")
-                if src and not src.startswith("data:"):
-                    return src
-        return None
-    except Exception as e:
-        logger.warning(f"No se pudo obtener foto de perfil: {e}")
-        return None
-
-async def obtener_nombre_usuario_instagram(page):
-    """Obtener el nombre de usuario y nombre completo de Instagram"""
-    try:
-        current_url = page.url
-        username_from_url = current_url.split('/')[-2] if current_url.endswith('/') else current_url.split('/')[-1]
-        username_from_url = username_from_url.split('?')[0]
-        
-        if username_from_url in ['followers', 'following']:
-            parts = current_url.split('/')
-            for i, part in enumerate(parts):
-                if part in ['followers', 'following'] and i > 0:
-                    username_from_url = parts[i-1]
-                    break
-        
-        selectores_nombre = [
-            'header section div div h2',
-            'header h2',
-            'article header h2',
-            'h1',
-            'h2'
-        ]
-        
-        nombre_completo = None
-        for selector in selectores_nombre:
-            element = await page.query_selector(selector)
-            if element:
-                text = await element.inner_text()
-                text = text.strip()
-                if text and text != username_from_url:
-                    nombre_completo = text
-                    break
-        
-        return {
-            'username': username_from_url,
-            'nombre_completo': nombre_completo or username_from_url
-        }
-    except Exception as e:
-        logger.warning(f"Error obteniendo nombre de usuario: {e}")
-        return {'username': 'unknown', 'nombre_completo': 'unknown'}
-
-async def obtener_datos_usuario_principal(page, perfil_url):
-    """Obtener datos del perfil principal"""
-    logger.info("Obteniendo datos del perfil principal de Instagram...")
-    perfil_url = normalize_input_url('instagram', perfil_url)
-    await page.goto(perfil_url)
-    await page.wait_for_timeout(5000)
+    await page.wait_for_timeout(7000)
     
     datos_usuario_ig = await obtener_nombre_usuario_instagram(page)
     username = datos_usuario_ig['username']
@@ -205,16 +109,45 @@ async def extraer_usuarios_instagram(page, tipo_lista="seguidores", usuario_prin
     no_new_users_count = 0
     max_no_new_users = 6
 
+    recent_additions = 0
     while scroll_attempts < max_scrolls and no_new_users_count < max_no_new_users:
         try:
             current_user_count = len(usuarios_dict)
 
             if container:
-                await scroll_element(container, 800)
+                await scroll_element(container, 1000)
             else:
-                await scroll_window(page, 600)
+                await scroll_window(page, 800)
 
-            await page.wait_for_timeout(1200)
+            # Espera adaptativa: poll hasta 1200ms a ver si aumentan los nodos visibles
+            try:
+                js_count = '''
+                (sels) => {
+                  for (const sel of sels) {
+                    const nodes = document.querySelectorAll(sel);
+                    if (nodes && nodes.length) return nodes.length;
+                  }
+                  return 0;
+                }
+                '''
+                selectors = [
+                    'div[role="dialog"] div[style*="flex-direction: column"] > div',
+                    'div[role="dialog"] div > div:has(a[role="link"])',
+                    'div[aria-modal="true"] div:has(a[role="link"])',
+                    f'div[aria-label="{tipo_lista.capitalize()}"] div:has(a)',
+                    'div[role="dialog"] a[role="link"]'
+                ]
+                base_count = await page.evaluate(js_count, selectors)
+                waited = 0
+                while waited < 1200:
+                    await page.wait_for_timeout(200)
+                    new_count = await page.evaluate(js_count, selectors)
+                    if new_count > base_count:
+                        break
+                    waited += 200
+            except Exception:
+                # Fallback a pequeña espera fija
+                await page.wait_for_timeout(2400)
 
             # Procesar usuarios después del scroll
             await procesar_usuarios_en_modal(page, usuarios_dict, usuario_principal, tipo_lista)
@@ -222,6 +155,7 @@ async def extraer_usuarios_instagram(page, tipo_lista="seguidores", usuario_prin
             # Verificar si se agregaron nuevos usuarios
             if len(usuarios_dict) > current_user_count:
                 no_new_users_count = 0
+                recent_additions += 1
                 logger.info("%s: %d usuarios encontrados (scroll %d)", tipo_lista, len(usuarios_dict), scroll_attempts + 1)
             else:
                 no_new_users_count += 1
@@ -231,8 +165,12 @@ async def extraer_usuarios_instagram(page, tipo_lista="seguidores", usuario_prin
 
             # Pausa cada 12 scrolls para evitar rate limiting
             if scroll_attempts % 12 == 0:
-                logger.info("Pausa para evitar rate limiting... (%d usuarios hasta ahora)", len(usuarios_dict))
-                await page.wait_for_timeout(2500)
+                logger.info("Pausa breve para evitar rate limiting... (%d usuarios hasta ahora)", len(usuarios_dict))
+                await page.wait_for_timeout(3500)
+
+            # Extender dinámicamente el máximo si seguimos añadiendo a última hora
+            if scroll_attempts >= max_scrolls - 2 and recent_additions >= 2 and max_scrolls < 120:
+                max_scrolls = min(120, max_scrolls + 20)
 
             # Verificar si llegamos al final del contenedor
             is_at_bottom = False
@@ -274,67 +212,57 @@ async def procesar_usuarios_en_modal(page, usuarios_dict, usuario_principal, tip
             'div[role="dialog"] a[role="link"]'
         ]
         
-        elementos_usuarios = []
+        data = None
         for selector in selectores_contenedor:
             try:
-                elementos = await page.query_selector_all(selector)
-                if elementos:
-                    # Filtrar elementos que realmente contienen información de usuario
-                    elementos_validos = []
-                    for elemento in elementos:
-                        try:
-                            # Verificar que tiene enlace de perfil
-                            enlace = await elemento.query_selector('a[role="link"]') or elemento
-                            if enlace:
-                                href = await enlace.get_attribute("href")
-                                if href and href.startswith('/') and len(href.split('/')) >= 2:
-                                    elementos_validos.append(elemento)
-                        except:
-                            continue
-                    
-                    if elementos_validos:
-                        elementos_usuarios = elementos_validos
-                        logger.info("Encontrados %d elementos con selector: %s", len(elementos_usuarios), selector)
-                        break
-            except:
+                # Extraer en una sola evaluación para reducir round-trips
+                js = '''
+                (sel) => {
+                  const nodes = Array.from(document.querySelectorAll(sel));
+                  const out = [];
+                  for (const el of nodes) {
+                    let a = el.querySelector("a[role='link']") || el.querySelector("a[href^='/']");
+                    if (!a) continue;
+                    const href = a.getAttribute("href") || "";
+                    if (!href.startsWith("/")) continue;
+                    const img = el.querySelector("img");
+                    const src = img ? (img.currentSrc || img.src || "") : "";
+                    const text = (el.textContent || "").trim();
+                    const name = text.split("\\n")[0] || null;
+                    out.push({ href, name, src });
+                  }
+                  return out;
+                }
+                '''
+                data = await page.evaluate(js, selector)
+                if data and len(data) > 0:
+                    logger.info("Encontrados %d elementos con selector: %s", len(data), selector)
+                    break
+            except Exception:
+                data = None
                 continue
-        
-        if not elementos_usuarios:
+
+        if not data:
             logger.info("No se encontraron usuarios en este scroll")
             return
 
-        # Procesar cada elemento de usuario
-        for elemento in elementos_usuarios:
+        for rec in data:
             try:
-                enlace = await elemento.query_selector('a[role="link"]') or elemento
-                if not enlace:
-                    continue
-
-                href = await enlace.get_attribute("href")
+                href = rec.get('href') or ''
                 if not href or not href.startswith('/'):
                     continue
-
-                # Construir URL absoluta y normalizada con builder
                 url_usuario_abs = f"https://www.instagram.com{href}"
-                texto_elemento = await elemento.inner_text()
-                lineas = texto_elemento.strip().split('\n')
-                nombre_completo_usuario = lineas[0] if lineas and lineas[0] else None
-                img_element = await elemento.query_selector('img')
-                url_foto = await img_element.get_attribute("src") if img_element else ""
+                nombre_completo_usuario = rec.get('name')
+                url_foto = rec.get('src') or ""
                 item = build_user_item('instagram', url_usuario_abs, nombre_completo_usuario, url_foto)
                 url_limpia = item['link_usuario']
                 username_usuario = item['username_usuario']
 
-                # Evitar procesar el usuario principal
                 if username_usuario == usuario_principal:
                     continue
-
-                # Evitar duplicados
                 if url_limpia in usuarios_dict:
                     continue
-
                 usuarios_dict[url_limpia] = item
-
             except Exception as e:
                 logger.warning(f"Error procesando usuario individual: {e}")
                 continue

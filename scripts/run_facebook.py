@@ -3,6 +3,7 @@ import os
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 import asyncio
+import argparse
 from playwright.async_api import async_playwright
 from src.utils.logging_config import setup_logging
 from src.scrapers.facebook.scraper import (
@@ -19,6 +20,15 @@ from src.utils.output import guardar_resultados
 logger = setup_logging()
 
 
+def parse_args():
+	parser = argparse.ArgumentParser(description="Run Facebook scraper interactively")
+	parser.add_argument("--url", help="Perfil objetivo de Facebook (https://www.facebook.com/<username>)", default=None)
+	parser.add_argument("--headless", help="Ejecutar navegador en modo headless (true/false)", default="false")
+	parser.add_argument("--storage-state", dest="storage_state", help="Ruta al storage_state.json de Facebook", default=None)
+	parser.add_argument("--slow-mo", dest="slow_mo", help="Retardo en ms entre acciones del navegador (para depurar)", type=int, default=0)
+	return parser.parse_args()
+
+
 def mostrar_menu():
 	print("\n📋 Menú de Opciones (Facebook):")
 	print("1. Scrapear amigos, seguidores y seguidos")
@@ -29,6 +39,7 @@ def mostrar_menu():
 
 
 async def main_facebook():
+	args = parse_args()
 	try:
 		print("📋 Instrucciones:")
 		print("1. Debes tener la sesión iniciada en Facebook en tu storage state")
@@ -36,12 +47,41 @@ async def main_facebook():
 		print("3. Este scraper navega a /friends_all, /followers y /following")
 		print()
 
-		url = input("Ingresa la URL del perfil de Facebook (ej: https://www.facebook.com/usuario): ")
+		url = args.url or input("Ingresa la URL del perfil de Facebook (ej: https://www.facebook.com/usuario): ")
+
+		# Determinar headless
+		headless_flag = str(args.headless).strip().lower() in ["1", "true", "yes", "y"]
+
+		# Determinar storage state
+		storage_state_path = (
+			args.storage_state
+			or os.environ.get("FACEBOOK_STORAGE_STATE")
+			or FACEBOOK_CONFIG.get("storage_state_path")
+		)
+
+		if not storage_state_path or not os.path.exists(storage_state_path):
+			print(f"❌ storage_state no encontrado: {storage_state_path or '(no especificado)'}")
+			print("   Configura --storage-state o la variable FACEBOOK_STORAGE_STATE, o revisa FACEBOOK_CONFIG.")
+			return
 
 		async with async_playwright() as p:
-			browser = await p.chromium.launch(headless=False)
-			context = await browser.new_context(storage_state=FACEBOOK_CONFIG["storage_state_path"])
+			browser = await p.chromium.launch(headless=headless_flag, slow_mo=args.slow_mo)
+			context = await browser.new_context(storage_state=storage_state_path)
 			page = await context.new_page()
+
+			# Comprobación rápida de sesión válida
+			try:
+				await page.goto("https://www.facebook.com/")
+				await page.wait_for_timeout(1500)
+				redirected = "login" in page.url.lower()
+				login_selector = await page.query_selector("input[name='email']")
+				if redirected or login_selector:
+					print("⚠️ La sesión de Facebook no está activa. Actualiza el storage_state e inténtalo de nuevo.")
+					await browser.close()
+					return
+			except Exception:
+				# Si falla, continuamos; el flujo de listas volverá a fallar y mostrará pistas
+				pass
 
 			while True:
 				opcion = mostrar_menu()
@@ -90,6 +130,7 @@ async def main_facebook():
 					print("  - El perfil es privado o restringido")
 					print("  - No hay sesión iniciada correctamente")
 					print("  - Facebook cambió su estructura")
+					print("  - Selectores desactualizados o barreras de UI (cookies/captcha)")
 					continue
 
 				# Reutilizamos 'comentadores' para almacenar reacciones (estructura similar con post_url -> photo_url)

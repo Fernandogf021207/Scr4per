@@ -14,9 +14,6 @@ STORAGE_DIR = os.path.join(DATA_DIR, 'storage')
 IMAGES_DIR = os.path.join(STORAGE_DIR, 'images')
 GRAPH_SESSION_DIR = os.path.join(STORAGE_DIR, 'graph_session')
 
-# Prefijos públicos estables servidos por FastAPI (ver api/main.py mounts)
-# Primario recomendado: /data/storage (montado a data/storage)
-# Alias de compatibilidad: /storage (también montado al mismo directorio)
 PUBLIC_IMAGES_PREFIX_PRIMARY = '/data/storage/images'
 PUBLIC_IMAGES_PREFIX_COMPAT = '/storage/images'
 

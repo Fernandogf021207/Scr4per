@@ -10,31 +10,24 @@ router = APIRouter()
 @router.post("/export")
 def export_to_excel(payload: Union[ExportInput, MultiExportInput]):
     try:
-        # Normalize payload into a list of export blocks
-        if isinstance(payload, MultiExportInput):
-            blocks: list[ExportBlock] = payload.bloques or []
-        else:
-            # Single-objective backward-compatible path
-            blocks = [ExportBlock(perfil_objetivo=payload.perfil_objetivo, perfiles_relacionados=payload.perfiles_relacionados)]
-
+        # El frontend envía un array de perfiles
         rows = []
-        first_objetivo_str_for_filename = None
-        for block in blocks:
-            objetivo = block.perfil_objetivo or {}
-            relacionados = block.perfiles_relacionados or []
-
-            objetivo_str = None
+        objetivo_str = ""
+        
+        for perfil in payload.perfiles:
+            objetivo = perfil.perfil_objetivo or {}
+            relacionados = perfil.perfiles_relacionados or []
+            
+            # Extraer identificador del perfil objetivo
             for key in ["username", "nombre_usuario", "nombre_completo", "full_name", "profile_url", "url_usuario", "updated_at"]:
                 if objetivo.get(key):
                     objetivo_str = str(objetivo.get(key))
                     break
-            objetivo_str = objetivo_str or ""
-
-            if first_objetivo_str_for_filename is None:
-                first_objetivo_str_for_filename = objetivo_str
-
+            objetivo_str = objetivo_str or "perfil"
+            
+            # Procesar cada relacionado
             for item in relacionados:
-                tipo = item.get("tipo de relacion") or item.get("tipo") or ""
+                tipo = item.get("tipo_de_relacion") or item.get("tipo de relacion") or item.get("tipo") or ""
                 rel_username = item.get("username") or item.get("username_usuario") or ""
                 rel_name = item.get("full_name") or item.get("nombre_usuario") or ""
                 rel_url = item.get("profile_url") or item.get("link_usuario") or ""

@@ -61,20 +61,26 @@ DEFAULT_HEADERS = {
 async def download_profile_image(
     photo_url: str,
     username: str,
+    platform: str,  # 'red_x', 'red_instagram', 'red_facebook'
     *,
+    photo_owner: Optional[str] = None,  # Username del dueño de la foto (default: username)
     overwrite: bool = False,
     timeout: float = 20.0,
     page: Optional[object] = None,
     on_failure: str = "proxy",  # 'empty' | 'proxy' | 'raise'
+    ftp_path: Optional[str] = None,
 ) -> str:
     """
-    Descarga la foto de perfil al servidor y devuelve la ruta local accesible por el frontend.
+    Descarga la foto de perfil y la sube al FTP.
 
-    - Crea storage/images si no existe.
+    - username: Usuario root (carpeta FTP: rs/{platform}/{username}/images/)
+    - photo_owner: Usuario dueño de la foto (filename: {photo_owner}.jpg)
+    - ftp_path: Ruta completa opcional para guardar en FTP (ignora username/platform/photo_owner para la ruta)
+    - Sube a FTP en la estructura: rs/{platform}/{username}/images/{photo_owner}.{ext}
     - Deduce la extensión por content-type o URL (fallback .jpg).
     - Evita re-descargar si ya existe (a menos que overwrite=True).
 
-    Returns: ruta relativa tipo "/data/storage/images/<username>.<ext>"
+    Returns: ruta FTP tipo "/files/scraped-image/{platform}/{username}/{filename}" o la ruta FTP directa si se usó ftp_path
     """
     if not photo_url:
         return ""
@@ -94,10 +100,11 @@ async def download_profile_image(
                 pass
 
             ext = _extension_from_headers(content_type, photo_url)
-            filename = f"{_safe_filename(username)}{ext}"
+            owner = photo_owner or username
+            filename = f"{_safe_filename(owner)}{ext}"
             file_path = os.path.join(IMAGES_DIR, filename)
 
-            if not overwrite and os.path.exists(file_path):
+            if not overwrite and os.path.exists(file_path) and not ftp_path:
                 return f"{PUBLIC_IMAGES_PREFIX_PRIMARY}/{filename}"
 
             # Download the image
@@ -108,17 +115,45 @@ async def download_profile_image(
             final_ct = resp.headers.get("content-type")
             final_ext = _extension_from_headers(final_ct, photo_url)
             if final_ext != ext:
-                filename = f"{_safe_filename(username)}{final_ext}"
+                owner = photo_owner or username
+                filename = f"{_safe_filename(owner)}{final_ext}"
                 file_path = os.path.join(IMAGES_DIR, filename)
 
-            # Write to disk atomically-ish
-            tmp_path = f"{file_path}.part"
-            with open(tmp_path, "wb") as f:
-                f.write(resp.content)
-            os.replace(tmp_path, file_path)
-        return f"{PUBLIC_IMAGES_PREFIX_PRIMARY}/{filename}"
-    except Exception as e:
-        logger.debug(f"download_profile_image httpx failed username={username} url={photo_url[:100]} err={type(e).__name__}:{str(e)[:100]}")
+            # Upload to FTP
+            try:
+                from src.utils.ftp_storage import get_ftp_client
+                ftp = get_ftp_client()
+                
+                if ftp_path:
+                    # Use provided path directly
+                    final_path = ftp_path
+                    if ftp_path.endswith('/'):
+                        final_path = f"{ftp_path}{filename}"
+                        
+                    ftp.upload_file(final_path, resp.content)
+                    # Return URL pointing to the new endpoint
+                    return f"/files/scraped-image-path/{final_path}"
+                else:
+                    ftp.upload(
+                        platform=platform,
+                        username=username,
+                        category='images',
+                        filename=filename,
+                        data=resp.content
+                    )
+                    return f"/files/scraped-image/{platform}/{username}/{filename}"
+            except Exception as ftp_error:
+                # Fallback to local storage on FTP failure
+                import logging
+                logger = logging.getLogger(__name__)
+                logger.warning(f"FTP upload failed, using local fallback: {ftp_error}")
+                ensure_dirs()
+                tmp_path = f"{file_path}.part"
+                with open(tmp_path, "wb") as f:
+                    f.write(resp.content)
+                os.replace(tmp_path, file_path)
+                return f"{PUBLIC_IMAGES_PREFIX_PRIMARY}/{filename}"
+    except Exception:
         # Fallback using Playwright page with session cookies if provided
         if page is not None:
             try:
@@ -126,18 +161,29 @@ async def download_profile_image(
                 if r.ok:
                     ct = r.headers.get("content-type", "")
                     ext = ".png" if "png" in ct else ".webp" if "webp" in ct else ".jpg"
-                    filename = f"{_safe_filename(username)}{ext}"
-                    file_path = os.path.join(IMAGES_DIR, filename)
-                    tmp_path = f"{file_path}.part"
-                    with open(tmp_path, "wb") as f:
-                        f.write(await r.body())
-                    os.replace(tmp_path, file_path)
-                    logger.info(f"download_profile_image playwright success username={username}")
-                    return f"{PUBLIC_IMAGES_PREFIX_PRIMARY}/{filename}"
-                else:
-                    logger.warning(f"download_profile_image playwright failed status={r.status} username={username} url={photo_url[:100]}")
-            except Exception as pe:
-                logger.warning(f"download_profile_image playwright exception username={username} err={type(pe).__name__}:{str(pe)[:100]}")
+                    owner = photo_owner or username
+                    filename = f"{_safe_filename(owner)}{ext}"
+                    body_data = await r.body()
+                    
+                    try:
+                        from src.utils.ftp_storage import get_ftp_client
+                        ftp = get_ftp_client()
+                        if ftp_path:
+                            final_path = ftp_path
+                            if ftp_path.endswith('/'):
+                                final_path = f"{ftp_path}{filename}"
+                            ftp.upload_file(final_path, body_data)
+                            return f"/files/scraped-image-path/{final_path}"
+                        else:
+                            ftp.upload(platform, username, 'images', filename, body_data)
+                            return f"/files/scraped-image/{platform}/{username}/{filename}"
+                    except:
+                        # Local fallback
+                        file_path = os.path.join(IMAGES_DIR, filename)
+                        with open(file_path, "wb") as f:
+                            f.write(body_data)
+                        return f"{PUBLIC_IMAGES_PREFIX_PRIMARY}/{filename}"
+            except Exception:
                 pass
         # Final fallback policy
         if on_failure == "proxy":
@@ -151,15 +197,20 @@ async def download_profile_image(
 async def local_or_proxy_photo_url(
     photo_url: str,
     username: str,
+    platform: str,  # 'red_x', 'red_instagram', 'red_facebook'
     mode: str = "download",
+    photo_owner: Optional[str] = None,  # Username del dueño de la foto
     page: Optional[object] = None,
     on_failure: str = "proxy",
     retries: int = 3,
     backoff_seconds: float = 0.4,
+    ftp_path: Optional[str] = None,
 ) -> str:
     """
     Devuelve una URL utilizable por el frontend para mostrar la imagen de perfil.
-    - mode="download": descarga y devuelve "/data/storage/images/<file>" (o "/storage/images/<file>" por compat)
+    - username: Usuario root (carpeta FTP)
+    - photo_owner: Usuario dueño de la foto (filename)
+    - mode="download": descarga y devuelve "/files/scraped-image/{platform}/{username}/{filename}"
     - mode="proxy": usa el endpoint /proxy-image para evitar CORS sin guardar
     - mode="external": devuelve la URL original (si el frontend puede cargarla)
     """
@@ -173,15 +224,15 @@ async def local_or_proxy_photo_url(
     if mode == "external":
         return photo_url
     # default -> download with retries
-    # If already a local storage path, return as-is
-    photo_str = str(photo_url)
-    if photo_str.startswith('/data/storage/') or photo_str.startswith('/storage/'):
+    # If already a local storage or FTP path, return as-is
+    if str(photo_url).startswith('/storage/') or str(photo_url).startswith('/files/'):
         return photo_url
 
     attempts = max(1, int(retries))
     for i in range(attempts):
-        result = await download_profile_image(photo_url, username, page=page, on_failure='proxy')
-        if result and (result.startswith('/data/storage/') or result.startswith('/storage/') or result.startswith(PUBLIC_IMAGES_PREFIX_PRIMARY)):
+        result = await download_profile_image(photo_url, username, platform, photo_owner=photo_owner, page=page, on_failure='proxy', ftp_path=ftp_path)
+        # Accept result if it's a valid path (not a proxy fallback)
+        if result and not result.startswith('/proxy-image'):
             return result
         if i < attempts - 1:
             try:
@@ -194,3 +245,44 @@ async def local_or_proxy_photo_url(
     if on_failure == 'raise':
         raise RuntimeError("Image download failed after retries")
     return ""
+
+
+async def download_image_to_path(
+    photo_url: str,
+    ftp_path: str,
+    timeout: float = 20.0
+) -> str:
+    """
+    Descarga una imagen desde una URL y la sube a una ruta específica del FTP.
+    
+    Args:
+        photo_url: URL de la imagen
+        ftp_path: Ruta completa en el FTP donde guardar la imagen
+        timeout: Timeout para la descarga
+        
+    Returns:
+        La ruta FTP utilizada si tuvo éxito, o string vacío si falló.
+    """
+    if not photo_url:
+        return ""
+        
+    from src.utils.ftp_storage import get_ftp_client
+    
+    try:
+        async with httpx.AsyncClient(timeout=timeout, follow_redirects=True, headers=DEFAULT_HEADERS, http2=True) as client:
+            response = await client.get(photo_url)
+            if response.status_code >= 400:
+                return ""
+                
+            content = response.content
+            if not content:
+                return ""
+                
+            ftp = get_ftp_client()
+            ftp.upload_file(ftp_path, content)
+            return ftp_path
+            
+    except Exception as e:
+        # Log error but don't crash
+        print(f"Error downloading image {photo_url}: {e}")
+        return ""

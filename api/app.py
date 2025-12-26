@@ -37,7 +37,7 @@ from src.scrapers.facebook.scraper import (
     scrap_comentarios_fotos as fb_scrap_comments,
     scrap_reacciones_fotos as fb_scrap_reactions,
 )
-from src.scrapers.facebook.config import FACEBOOK_CONFIG
+# Nota: FACEBOOK_CONFIG ya no existe - sesiones ahora en DB via ScrapingService
 from src.scrapers.instagram.scraper import (
     obtener_datos_usuario_principal as ig_obtener_datos,
     scrap_seguidores as ig_scrap_followers,
@@ -77,6 +77,8 @@ app = FastAPI(title="Scr4per DB API", version="0.1.0")
 _default_frontend_origins = [
     "http://localhost:3000",
     "http://127.0.0.1:3000",
+    "http://localhost:5173",
+    "https://naatintelligence.com",
 ]
 # Optional: extend via env FRONTEND_ORIGINS as comma-separated URLs
 _extra_origins = [o.strip() for o in (os.getenv("FRONTEND_ORIGINS") or "").split(",") if o.strip()]
@@ -461,8 +463,9 @@ def create_reaction(r: ReactionIn):
 # ---------- Scraper Orchestrator ----------
 
 def _storage_state_for(platform: str) -> str:
+    """Fallback para código legacy. Nuevas implementaciones deben usar ScrapingService."""
     if platform == 'facebook':
-        return FACEBOOK_CONFIG.get('storage_state_path')
+        return 'data/storage/facebook_storage_state.json'
     if platform == 'instagram':
         return INSTAGRAM_CONFIG.get('storage_state_path')
     if platform == 'x':

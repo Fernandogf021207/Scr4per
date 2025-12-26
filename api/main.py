@@ -1,10 +1,17 @@
 import os
 import sys
+import asyncio
+import platform
 import logging
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from paths import STORAGE_DIR, PUBLIC_IMAGES_PREFIX_PRIMARY, PUBLIC_IMAGES_PREFIX_COMPAT, ensure_dirs
+from paths import STORAGE_DIR, ensure_dirs
+from src.utils.logging_config import setup_logging
+
+# Configurar Policy para Windows antes de cualquier otra cosa
+if platform.system() == 'Windows':
+    asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
 
 # Make repo root importable
 ROOT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
@@ -12,6 +19,8 @@ if ROOT_DIR not in sys.path:
     sys.path.append(ROOT_DIR)
 
 def create_app() -> FastAPI:
+    # Configure logging early
+    setup_logging()
     app = FastAPI(title="Scr4per DB API", version="0.1.0")
 
     # Ensure logging configured (scripts call setup_logging, API didn't)
@@ -29,8 +38,12 @@ def create_app() -> FastAPI:
 
     # CORS
     _default_frontend_origins = [
+        "http://localhost:3000",
+        "http://127.0.0.1:3000",
+        "http://192.168.100.207",
+        "http://192.168.100.93:5173",
+        "http://localhost:5173",
         "https://naatintelligence.com",
-        "http://naatintelligence.com:5173"
     ]
     _extra_origins = [o.strip() for o in (os.getenv("FRONTEND_ORIGINS") or "").split(",") if o.strip()]
     _allowed_origins = list({*(_default_frontend_origins + _extra_origins)})
@@ -41,13 +54,7 @@ def create_app() -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
-
-    # Static mounts
-    # Directorio real: <repo>/data/storage
-    # Exponemos dos prefijos:
-    #  - /data/storage  (contrato actual devuelto por upload-image)
-    #  - /storage       (alias de compatibilidad)
-    # Esto permite eliminar cualquier carpeta duplicada bajo api/.
+    # Static files
     ensure_dirs()
     if os.path.isdir(STORAGE_DIR):
         app.mount("/data/storage", StaticFiles(directory=STORAGE_DIR), name="data_storage")
@@ -67,10 +74,11 @@ def create_app() -> FastAPI:
     from .routers.export import router as export_router
     from .routers.files import router as files_router
     from .routers.multi_scrape import router as multi_scrape_router
-    from .routers.multi_related import router as multi_related_router
-    # Settings and sessions management
-    from .routers.config import router as config_router  # type: ignore
-    from .routers.sessions import router as sessions_router  # type: ignore
+    from .routers.analyze import router as analyze_router
+    from .routers.batch_analyze import router as batch_analyze_router
+    from .routers.targets import router as targets_router
+    from .routers.realtime import router as realtime_router
+    from .routers.sessions import router as sessions_router
 
     app.include_router(health_router)
     app.include_router(proxy_router)
@@ -85,8 +93,10 @@ def create_app() -> FastAPI:
     app.include_router(export_router)
     app.include_router(files_router, prefix="/files")
     app.include_router(multi_scrape_router)
-    app.include_router(multi_related_router)
-    app.include_router(config_router)
+    app.include_router(analyze_router)
+    app.include_router(batch_analyze_router)
+    app.include_router(targets_router)
+    app.include_router(realtime_router)
     app.include_router(sessions_router)
 
     return app
