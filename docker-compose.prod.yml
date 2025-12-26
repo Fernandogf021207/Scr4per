@@ -1,0 +1,35 @@
+services:
+  scr4per_api:
+    image: osint:1.0
+    build: .
+    restart: unless-stopped
+    container_name: OSINT-API-PROD
+    ports:
+      - "443:443"
+    env_file:
+      - ./db/.env
+    environment:
+      # Ensure POSTGRES_HOST is set correctly for your environment
+      # Edit db/.env on the VM or override here, e.g. POSTGRES_HOST=127.0.0.1
+      POSTGRES_HOST: 127.0.0.1
+    volumes:
+      # Mount the real certificates that live on the VM host
+      - /opt/naat/fullchain.pem:/app/data/config/certs/fullchain.pem:ro
+      - /opt/naat/naatapi.key:/app/data/config/certs/naatapi.key:ro
+      # Persist data and logs
+      - ./data:/app/data
+      - ./logs:/app/logs
+    command: [
+      "uvicorn", "api.main:app",
+      "--host", "0.0.0.0",
+      "--port", "8443",
+      "--ssl-certfile", "/app/data/config/certs/fullchain.pem",
+      "--ssl-keyfile", "/app/data/config/certs/naatapi.key",
+      "--root-path", "/redes_sociales"
+    ]
+    networks:
+      - osint_net
+
+networks:
+  osint_net:
+    driver: bridge

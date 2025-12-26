@@ -1,13 +1,14 @@
 from io import BytesIO
+from typing import Union
 import pandas as pd
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
-from ..schemas import ExportInput
+from ..schemas import ExportInput, MultiExportInput, ExportBlock
 
 router = APIRouter()
 
 @router.post("/export")
-def export_to_excel(payload: ExportInput):
+def export_to_excel(payload: Union[ExportInput, MultiExportInput]):
     try:
         # El frontend envía un array de perfiles
         rows = []
@@ -50,7 +51,11 @@ def export_to_excel(payload: ExportInput):
             df.to_excel(writer, index=False, sheet_name="export")
         output.seek(0)
 
-        filename = f"export_{objetivo_str or 'perfil'}.xlsx"
+        # Build filename
+        if len(blocks) > 1:
+            filename = "export_multi.xlsx"
+        else:
+            filename = f"export_{first_objetivo_str_for_filename or 'perfil'}.xlsx"
         return StreamingResponse(
             output,
             media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",

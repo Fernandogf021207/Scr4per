@@ -961,3 +961,4 @@ async def scrap_lista_usuarios(page, perfil_url, tipo):
     else:
         logger.warning("Tipo de lista inválido")
         return []
+

@@ -1,13 +1,34 @@
-version: "3.9"
-
 services:
   scr4per_api:
+    image: osint:1.0
     build: .
+    restart: "no"
     container_name: OSINT-API
     ports:
-      - "8000:8000"
+      - "8443:8443"
     env_file:
-      - ./db/.env   # 👈 usa credenciales del archivo
+      - ./db/.env
+    environment:
+      # Override host to reach Postgres on the host machine from inside the container
+      POSTGRES_HOST: host.docker.internal
+    volumes:
+      # Persist data, including storage and certs
+      - ./data:/app/data
+      # Optional: persist logs outside container
+      - ./logs:/app/logs
+    extra_hosts:
+      # Ensure host.docker.internal resolves on Linux
+      - "host.docker.internal:host-gateway"
+    command: [
+      "uvicorn", "api.main:app",
+      "--host", "0.0.0.0",
+      "--port", "8443",
+      "--ssl-certfile", "/app/data/config/certs/fullchain.pem",
+      "--ssl-keyfile", "/app/data/config/certs/naatapi.key",
+      # Do not set --root-path here. The app's routers are mounted at their own paths
+      # and providing a root-path plus calling the API with the same prefix caused
+      # duplicated paths (logs showed /redes_sociales/redes_sociales/health).
+    ]
     networks:
       - osint_net
 

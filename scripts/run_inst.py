@@ -39,9 +39,29 @@ async def main_instagram():
         url = input("Ingresa la URL del perfil de Instagram (ej: https://www.instagram.com/usuario/): ")
 
         async with async_playwright() as p:
-            browser = await p.chromium.launch(headless=False)
-            context = await browser.new_context(storage_state=INSTAGRAM_CONFIG["storage_state_path"])
+            # Args para maximizar estabilidad en Windows (evita crashes GPU y reduce carga)
+            browser = await p.chromium.launch(
+                headless=False,
+                args=[
+                    "--disable-gpu",
+                    "--disable-dev-shm-usage",
+                ],
+                slow_mo=int(os.getenv("HEADED_SLOWMO", "0")) or None,
+            )
+            context = await browser.new_context(
+                storage_state=INSTAGRAM_CONFIG["storage_state_path"],
+                viewport={"width": 1280, "height": 900},
+                ignore_https_errors=True,
+            )
             page = await context.new_page()
+
+            async def fresh_page(old_page):
+                try:
+                    await old_page.close()
+                except Exception:
+                    pass
+                new_page = await context.new_page()
+                return new_page
 
             while True:
                 opcion = mostrar_menu()
@@ -65,10 +85,13 @@ async def main_instagram():
                 if opcion in ['1', '5']:  # Scrapear seguidores
                     print("\n🔍 Scrapeando seguidores...")
                     seguidores = await scrap_seguidores(page, url, username)
+                    # Refrescar la página para liberar el modal y memoria de la sesión anterior
+                    page = await fresh_page(page)
 
                 if opcion in ['2', '5']:  # Scrapear seguidos
                     print("\n🔍 Scrapeando seguidos...")
                     seguidos = await scrap_seguidos(page, url, username)
+                    page = await fresh_page(page)
 
                 if opcion in ['3', '5']:  # Scrapear comentadores
                     print("\n🔍 Scrapeando comentadores...")
@@ -81,6 +104,7 @@ async def main_instagram():
                         max_posts = 5
                     
                     comentadores = await scrap_comentadores_instagram(page, url, username, max_posts)
+                    page = await fresh_page(page)
 
                 if opcion in ['4', '5']:  # Scrapear likes (reacciones)
                     print("\n🔍 Scrapeando likes (reacciones)...")
@@ -92,6 +116,7 @@ async def main_instagram():
                     except ValueError:
                         max_posts_likes = 5
                     reacciones = await scrap_reacciones_instagram(page, url, username, max_posts=max_posts_likes)
+                    page = await fresh_page(page)
 
                 # Verificar si se encontraron datos
                 total_usuarios = len(seguidores) + len(seguidos) + len(comentadores) + len(reacciones)
