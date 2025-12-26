@@ -35,10 +35,10 @@ class LayoutChangeException(ScraperException):
     Se lanza cuando los selectores CSS/XPath no funcionan debido a cambios en el layout.
     Útil para detectar redesigns o cambios en la estructura DOM.
     """
-    def __init__(self, platform: str, selector: str, message: str = "Selector no encontrado"):
+    def __init__(self, platform: str, selector: str = "", message: str = "Selector no encontrado"):
         self.platform = platform
         self.selector = selector
-        self.message = f"[{platform}] {message}: {selector}"
+        self.message = f"[{platform}] {message}: {selector}" if selector else f"[{platform}] {message}"
         super().__init__(self.message)
 
 

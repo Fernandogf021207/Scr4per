@@ -180,6 +180,7 @@ async def ejecutar_analisis_background(
             username=username,
             max_photos=max_photos,
             headless=headless,
+            id_usuario=context.get('id_usuario'),
             image_base_path=image_base_path
         )
         
@@ -329,158 +330,288 @@ async def ejecutar_analisis_background(
 
 
 # Helper function para scraping completo (usando adapters como multi_scrape)
-async def _scrape_single_profile(platform: str, username: str, max_photos: int, headless: bool, image_base_path: Optional[str] = None):
+async def _scrape_single_profile(platform: str, username: str, max_photos: int, headless: bool, id_usuario: int, image_base_path: Optional[str] = None):
     """
     Scraping completo de un perfil incluyendo seguidores/seguidos.
-    Usa los mismos adapters que multi_scrape.
+    Para Facebook usa FacebookScraperManager con sesiones desde BD.
+    Para otras plataformas usa adapters legacy.
     """
-    from ..deps import storage_state_for
     from ..repositories import upsert_profile, add_relationship
-    from ..services.adapters import launch_browser, close_browser, get_adapter
+    from src.utils.exceptions import SessionExpiredException, AccountBannedException, SessionNotFoundException
+    from src.services.scraping_service import scraping_service
     import os
     
     conn = get_conn()
     profile_id = None
     
     try:
-        # Verificar storage_state
-        storage_state = storage_state_for(platform)
-        if not storage_state or not os.path.isfile(storage_state):
-            raise Exception(f"Storage state no encontrado para {platform}. Inicia sesión primero.")
-        
-        # Lanzar browser y obtener adapter
-        browser = await launch_browser(headless=headless)
-        adapter = get_adapter(platform, browser, tenant=None)
-        
-        try:
-            # 1. Obtener perfil principal
-            logger.info(f"Obteniendo perfil de {username}...")
-            root_profile = await adapter.get_root_profile(username, image_base_path=image_base_path)
+        # CASO 1: Facebook - usar FacebookScraperManager con sesiones desde BD
+        if platform == 'facebook':
+            from src.scrapers.facebook.scraper import FacebookScraperManager
+            from src.scrapers.facebook import navigation, scraper as fb_scraper_module
             
-            # 2. Obtener seguidores y seguidos
-            logger.info(f"Obteniendo seguidores de {username}...")
-            followers = await adapter.get_followers(username, max_photos, image_base_path=image_base_path)
-            
-            logger.info(f"Obteniendo seguidos de {username}...")
-            following = await adapter.get_following(username, max_photos, image_base_path=image_base_path)
-            
-            # 3. Si es Facebook, obtener amigos, reacciones y comentarios
-            friends = []
-            reactors = []
-            commenters = []
-            
-            if platform == 'facebook':
-                logger.info(f"Obteniendo amigos de {username}...")
+            try:
+                # Obtener sesión activa desde BD
+                session_data = scraping_service.get_session_for_user(id_usuario, 'facebook')
+                logger.info(f"Sesión obtenida para usuario {id_usuario}: id_sesion={session_data['id_sesion']}")
+                
+                # Extraer cookies del storage_state
+                storage_state = session_data['cookies']
+                cookies = storage_state.get('cookies', [])
+                
+                if not cookies:
+                    raise Exception("La sesión no contiene cookies válidas")
+                
+                # Iniciar scraper con cookies desde BD
+                manager = FacebookScraperManager()
+                await manager.start(
+                    cookies=cookies,
+                    proxy_url=session_data.get('proxy_url'),
+                    user_agent=session_data.get('user_agent'),
+                    session_id=session_data['id_sesion'],
+                    headless=headless
+                )
+                
+                # Validar sesión (Early Exit)
                 try:
-                    friends = await adapter.get_friends(username)
+                    await manager._validate_session_integrity()
+                    logger.info(f"✅ Sesión validada para usuario {id_usuario}")
+                    
+                    # Actualizar actividad de la sesión
+                    scraping_service.update_session_activity(session_data['id_sesion'])
+                    
+                except SessionExpiredException as e:
+                    logger.error(f"Sesión expirada: {e}")
+                    # Marcar sesión como expirada en BD
+                    scraping_service._mark_session_expired(session_data['id_sesion'])
+                    await manager.close()
+                    raise
+                    
+                except AccountBannedException as e:
+                    logger.error(f"Cuenta baneada: {e}")
+                    # Marcar sesión como baneada en BD
+                    scraping_service.mark_session_banned(session_data['id_sesion'])
+                    await manager.close()
+                    raise
+                
+                # Sesión válida - proceder con scraping
+                page = manager.get_page()
+                
+                # 1. Obtener perfil principal
+                logger.info(f"Obteniendo perfil de {username}...")
+                root_profile = await fb_scraper_module.obtener_datos_usuario_facebook(page, f"https://www.facebook.com/{username}")
+                
+                # 2. Obtener amigos
+                logger.info(f"Obteniendo amigos de {username}...")
+                friends = []
+                try:
+                    friends = await fb_scraper_module.obtener_amigos_facebook(page, username)
                 except Exception as e:
                     logger.warning(f"No se pudieron obtener amigos: {e}")
                 
-                logger.info(f"Obteniendo reacciones en fotos de {username}...")
-                try:
-                    reactors = await adapter.get_photo_reactors(username, max_photos, include_comment_reactions=False)
-                except Exception as e:
-                    logger.warning(f"No se pudieron obtener reacciones: {e}")
+                # 3. Cerrar navegador
+                await manager.close()
+                
+                # 4. Guardar en BD
+                with conn.cursor() as cur:
+                    # Perfil principal
+                    profile_id = upsert_profile(
+                        cur,
+                        platform=platform,
+                        username=root_profile.get('username', username),
+                        full_name=root_profile.get('nombre'),
+                        profile_url=root_profile.get('perfil_url'),
+                        photo_url=root_profile.get('foto_perfil')
+                    )
                     
-                logger.info(f"Obteniendo comentarios en fotos de {username}...")
-                try:
-                    commenters = await adapter.get_photo_commenters(username, max_photos)
-                except Exception as e:
-                    logger.warning(f"No se pudieron obtener comentarios: {e}")
+                    # Relaciones - Amigos (Facebook)
+                    for friend in friends[:100]:
+                        if friend.get('username') and friend['username'] != username:
+                            upsert_profile(
+                                cur,
+                                platform=platform,
+                                username=friend['username'],
+                                full_name=friend.get('full_name'),
+                                profile_url=friend.get('profile_url'),
+                                photo_url=friend.get('photo_url')
+                            )
+                            add_relationship(cur, platform, username, friend['username'], 'friend')
+                    
+                    conn.commit()
+                
+                logger.info(f"Scraping completado: {len(friends)} amigos")
+                
+                # Resetear error_count después de scraping exitoso
+                scraping_service.reset_error_count(session_data['id_sesion'])
+                
+                return {
+                    'profile_id': profile_id,
+                    'profile': root_profile,
+                    'followers_count': 0,
+                    'following_count': 0,
+                    'friends_count': len(friends),
+                    'reactors_count': 0,
+                    'commenters_count': 0
+                }
+                
+            except SessionNotFoundException as e:
+                logger.error(f"Sesión no encontrada: {e}")
+                raise Exception(f"El usuario {id_usuario} no ha vinculado una cuenta de Facebook. Por favor, usar la API de Sesiones (BYOS) para cargar credenciales.")
+                
+            except (SessionExpiredException, AccountBannedException) as e:
+                # Estas excepciones ya fueron loggeadas y manejadas arriba
+                raise Exception(str(e))
             
-            # 4. Guardar en BD
-            with conn.cursor() as cur:
-                # Perfil principal
-                profile_id = upsert_profile(
-                    cur,
-                    platform=platform,
-                    username=root_profile.get('username', username),
-                    full_name=root_profile.get('full_name'),
-                    profile_url=root_profile.get('profile_url'),
-                    photo_url=root_profile.get('photo_url')
-                )
+            except Exception as e:
+                # Incrementar error_count en caso de cualquier otro error
+                logger.error(f"Error en scraping de Facebook: {e}")
+                if 'session_data' in locals():
+                    scraping_service.increment_error_count(session_data['id_sesion'])
+                raise
+        
+        # CASO 2: Otras plataformas - usar adapters legacy
+        else:
+            from ..deps import storage_state_for
+            from ..services.adapters import launch_browser, close_browser, get_adapter
+            
+            # Verificar storage_state
+            storage_state = storage_state_for(platform)
+            if not storage_state or not os.path.isfile(storage_state):
+                raise Exception(f"Storage state no encontrado para {platform}. Inicia sesión primero.")
+            
+            # Lanzar browser y obtener adapter
+            browser = await launch_browser(headless=headless)
+            adapter = get_adapter(platform, browser, tenant=None)
+        
+            try:
+                # 1. Obtener perfil principal
+                logger.info(f"Obteniendo perfil de {username}...")
+                root_profile = await adapter.get_root_profile(username, image_base_path=image_base_path)
                 
-                # Relaciones - Seguidores
-                for follower in followers[:100]:  # Limitar a 100 para no saturar
-                    if follower.get('username') and follower['username'] != username:
-                        upsert_profile(
-                            cur,
-                            platform=platform,
-                            username=follower['username'],
-                            full_name=follower.get('full_name'),
-                            profile_url=follower.get('profile_url'),
-                            photo_url=follower.get('photo_url')
-                        )
-                        add_relationship(cur, platform, username, follower['username'], 'follower')
+                # 2. Obtener seguidores y seguidos
+                logger.info(f"Obteniendo seguidores de {username}...")
+                followers = await adapter.get_followers(username, max_photos, image_base_path=image_base_path)
                 
-                # Relaciones - Seguidos
-                for followed in following[:100]:
-                    if followed.get('username') and followed['username'] != username:
-                        upsert_profile(
-                            cur,
-                            platform=platform,
-                            username=followed['username'],
-                            full_name=followed.get('full_name'),
-                            profile_url=followed.get('profile_url'),
-                            photo_url=followed.get('photo_url')
-                        )
-                        add_relationship(cur, platform, username, followed['username'], 'following')
+                logger.info(f"Obteniendo seguidos de {username}...")
+                following = await adapter.get_following(username, max_photos, image_base_path=image_base_path)
                 
-                # Relaciones - Amigos (Facebook)
-                for friend in friends[:100]:
-                    if friend.get('username') and friend['username'] != username:
-                        upsert_profile(
-                            cur,
-                            platform=platform,
-                            username=friend['username'],
-                            full_name=friend.get('full_name'),
-                            profile_url=friend.get('profile_url'),
-                            photo_url=friend.get('photo_url')
-                        )
-                        add_relationship(cur, platform, username, friend['username'], 'friend')
+                # 3. Si es Facebook, obtener amigos, reacciones y comentarios
+                friends = []
+                reactors = []
+                commenters = []
+                
+                if platform == 'facebook':
+                    logger.info(f"Obteniendo amigos de {username}...")
+                    try:
+                        friends = await adapter.get_friends(username)
+                    except Exception as e:
+                        logger.warning(f"No se pudieron obtener amigos: {e}")
+                    
+                    logger.info(f"Obteniendo reacciones en fotos de {username}...")
+                    try:
+                        reactors = await adapter.get_photo_reactors(username, max_photos, include_comment_reactions=False)
+                    except Exception as e:
+                        logger.warning(f"No se pudieron obtener reacciones: {e}")
+                        
+                    logger.info(f"Obteniendo comentarios en fotos de {username}...")
+                    try:
+                        commenters = await adapter.get_photo_commenters(username, max_photos)
+                    except Exception as e:
+                        logger.warning(f"No se pudieron obtener comentarios: {e}")
+                
+                # 4. Guardar en BD
+                with conn.cursor() as cur:
+                    # Perfil principal
+                    profile_id = upsert_profile(
+                        cur,
+                        platform=platform,
+                        username=root_profile.get('username', username),
+                        full_name=root_profile.get('full_name'),
+                        profile_url=root_profile.get('profile_url'),
+                        photo_url=root_profile.get('photo_url')
+                    )
+                    
+                    # Relaciones - Seguidores
+                    for follower in followers[:100]:  # Limitar a 100 para no saturar
+                        if follower.get('username') and follower['username'] != username:
+                            upsert_profile(
+                                cur,
+                                platform=platform,
+                                username=follower['username'],
+                                full_name=follower.get('full_name'),
+                                profile_url=follower.get('profile_url'),
+                                photo_url=follower.get('photo_url')
+                            )
+                            add_relationship(cur, platform, username, follower['username'], 'follower')
+                    
+                    # Relaciones - Seguidos
+                    for followed in following[:100]:
+                        if followed.get('username') and followed['username'] != username:
+                            upsert_profile(
+                                cur,
+                                platform=platform,
+                                username=followed['username'],
+                                full_name=followed.get('full_name'),
+                                profile_url=followed.get('profile_url'),
+                                photo_url=followed.get('photo_url')
+                            )
+                            add_relationship(cur, platform, username, followed['username'], 'following')
+                    
+                    # Relaciones - Amigos (Facebook)
+                    for friend in friends[:100]:
+                        if friend.get('username') and friend['username'] != username:
+                            upsert_profile(
+                                cur,
+                                platform=platform,
+                                username=friend['username'],
+                                full_name=friend.get('full_name'),
+                                profile_url=friend.get('profile_url'),
+                                photo_url=friend.get('photo_url')
+                            )
+                            add_relationship(cur, platform, username, friend['username'], 'friend')
 
-                # Relaciones - Reacciones (Facebook)
-                for reactor in reactors[:100]:
-                    if reactor.get('username') and reactor['username'] != username:
-                        upsert_profile(
-                            cur,
-                            platform=platform,
-                            username=reactor['username'],
-                            full_name=reactor.get('full_name'),
-                            profile_url=reactor.get('profile_url'),
-                            photo_url=reactor.get('photo_url')
-                        )
-                        add_relationship(cur, platform, username, reactor['username'], 'reacted')
+                    # Relaciones - Reacciones (Facebook)
+                    for reactor in reactors[:100]:
+                        if reactor.get('username') and reactor['username'] != username:
+                            upsert_profile(
+                                cur,
+                                platform=platform,
+                                username=reactor['username'],
+                                full_name=reactor.get('full_name'),
+                                profile_url=reactor.get('profile_url'),
+                                photo_url=reactor.get('photo_url')
+                            )
+                            add_relationship(cur, platform, username, reactor['username'], 'reacted')
 
-                # Relaciones - Comentarios (Facebook)
-                for commenter in commenters[:100]:
-                    if commenter.get('username') and commenter['username'] != username:
-                        upsert_profile(
-                            cur,
-                            platform=platform,
-                            username=commenter['username'],
-                            full_name=commenter.get('full_name'),
-                            profile_url=commenter.get('profile_url'),
-                            photo_url=commenter.get('photo_url')
-                        )
-                        add_relationship(cur, platform, username, commenter['username'], 'commented')
+                    # Relaciones - Comentarios (Facebook)
+                    for commenter in commenters[:100]:
+                        if commenter.get('username') and commenter['username'] != username:
+                            upsert_profile(
+                                cur,
+                                platform=platform,
+                                username=commenter['username'],
+                                full_name=commenter.get('full_name'),
+                                profile_url=commenter.get('profile_url'),
+                                photo_url=commenter.get('photo_url')
+                            )
+                            add_relationship(cur, platform, username, commenter['username'], 'commented')
+                    
+                    conn.commit()
                 
-                conn.commit()
-            
-            logger.info(f"Scraping completado: {len(followers)} seguidores, {len(following)} seguidos, {len(friends)} amigos, {len(reactors)} reacciones, {len(commenters)} comentarios")
-            
-            return {
-                'profile_id': profile_id,
-                'profile': root_profile,
-                'followers_count': len(followers),
-                'following_count': len(following),
-                'friends_count': len(friends),
-                'reactors_count': len(reactors),
-                'commenters_count': len(commenters)
-            }
-            
-        finally:
-            await close_browser(browser)
+                logger.info(f"Scraping completado: {len(followers)} seguidores, {len(following)} seguidos, {len(friends)} amigos, {len(reactors)} reacciones, {len(commenters)} comentarios")
+                
+                return {
+                    'profile_id': profile_id,
+                    'profile': root_profile,
+                    'followers_count': len(followers),
+                    'following_count': len(following),
+                    'friends_count': len(friends),
+                    'reactors_count': len(reactors),
+                    'commenters_count': len(commenters)
+                }
+                
+            finally:
+                await close_browser(browser)
         
     except Exception as e:
         logger.error(f"Error en scraping de {platform}/{username}: {e}")

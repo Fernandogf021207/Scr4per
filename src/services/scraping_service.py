@@ -134,6 +134,83 @@ class ScrapingService:
             if conn:
                 conn.close()
     
+    def reset_error_count(self, id_sesion: int) -> None:
+        """
+        Resetea el contador de errores y actualiza la actividad en caso de scraping exitoso.
+        
+        Args:
+            id_sesion: ID de la sesión a actualizar
+        """
+        conn = None
+        try:
+            conn = psycopg2.connect(**self.db_config)
+            cursor = conn.cursor()
+            
+            query = """
+                UPDATE entidades.sesiones_scraping
+                SET error_count = 0, ultima_actividad = NOW()
+                WHERE id_sesion = %s
+            """
+            
+            cursor.execute(query, (id_sesion,))
+            conn.commit()
+            cursor.close()
+            
+        except Exception as e:
+            if conn:
+                conn.rollback()
+            raise Exception(f"Error al resetear error_count: {str(e)}")
+        finally:
+            if conn:
+                conn.close()
+    
+    def increment_error_count(self, id_sesion: int) -> None:
+        """
+        Incrementa el contador de errores de una sesión.
+        Si error_count >= 5, cambia automáticamente el estado a 'bloqueada'.
+        
+        Args:
+            id_sesion: ID de la sesión a actualizar
+        """
+        conn = None
+        try:
+            conn = psycopg2.connect(**self.db_config)
+            cursor = conn.cursor()
+            
+            # Incrementar error_count
+            query = """
+                UPDATE entidades.sesiones_scraping
+                SET error_count = error_count + 1
+                WHERE id_sesion = %s
+                RETURNING error_count
+            """
+            
+            cursor.execute(query, (id_sesion,))
+            result = cursor.fetchone()
+            
+            if result:
+                error_count = result[0]
+                
+                # Circuit Breaker: Si error_count >= 5, bloquear sesión
+                if error_count >= 5:
+                    update_state_query = """
+                        UPDATE entidades.sesiones_scraping
+                        SET estado = 'bloqueada'
+                        WHERE id_sesion = %s
+                    """
+                    cursor.execute(update_state_query, (id_sesion,))
+            
+            conn.commit()
+            cursor.close()
+            
+        except Exception as e:
+            if conn:
+                conn.rollback()
+            raise Exception(f"Error al incrementar error_count: {str(e)}")
+        finally:
+            if conn:
+                conn.close()
+    
     def _mark_session_expired(self, id_sesion: int) -> None:
         """
         Marca una sesión como expirada.

@@ -44,6 +44,20 @@ class FacebookNavigation:
             return f"{FacebookNavigation.BASE_URL}/{identifier}/friends"
     
     @staticmethod
+    def get_friends_url(profile_id: str) -> str:
+        """
+        Alias de build_friends_url para compatibilidad.
+        Detecta automáticamente si es ID numérico o username.
+        
+        Args:
+            profile_id: ID numérico (100012345) o username (juan.perez)
+            
+        Returns:
+            URL de la lista de amigos
+        """
+        return FacebookNavigation.build_friends_url(profile_id)
+    
+    @staticmethod
     def build_photos_url(identifier: str) -> str:
         """
         Construye URL de fotos del perfil.

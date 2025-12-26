@@ -25,6 +25,7 @@ class SesionScraping(Base):
     user_agent = Column(Text, nullable=True)
     estado = Column(String(20), default='activa', nullable=False)  # activa, caducada, bloqueada
     ultima_actividad = Column(DateTime(timezone=True), default=func.now(), nullable=False)
+    error_count = Column(Integer, default=0, nullable=False)  # Contador de errores consecutivos
     
     def __repr__(self):
         return f"<SesionScraping(id={self.id_sesion}, usuario={self.id_usuario}, plataforma={self.plataforma}, estado={self.estado})>"

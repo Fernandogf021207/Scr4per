@@ -32,7 +32,7 @@ class FacebookScraperManager:
 	
 	async def start(
 		self,
-		storage_state: dict,
+		cookies: List[dict],
 		proxy_url: Optional[str] = None,
 		user_agent: Optional[str] = None,
 		session_id: Optional[int] = None,
@@ -42,7 +42,7 @@ class FacebookScraperManager:
 		Inicia el navegador con las credenciales inyectadas desde la DB.
 		
 		Args:
-			storage_state: Diccionario con cookies de Playwright (storage_state)
+			cookies: Lista de diccionarios con cookies de Playwright
 			proxy_url: URL del proxy (opcional)
 			user_agent: User agent personalizado (opcional)
 			session_id: ID de la sesión en la DB (para logging)
@@ -58,7 +58,6 @@ class FacebookScraperManager:
 		
 		# Configurar opciones del contexto
 		context_options = {
-			'storage_state': storage_state,
 			'user_agent': user_agent or facebook_config.user_agent,
 			'viewport': {'width': 1920, 'height': 1080},
 		}
@@ -72,7 +71,10 @@ class FacebookScraperManager:
 		self.context = await self.browser.new_context(**context_options)
 		self.page = await self.context.new_page()
 		
-		logger.info(f"FacebookScraperManager iniciado (session_id={session_id}, headless={headless})")
+		# Inyectar cookies manualmente
+		await self.context.add_cookies(cookies)
+		
+		logger.info(f"FacebookScraperManager iniciado (session_id={session_id}, headless={headless}, cookies={len(cookies)})")
 	
 	async def close(self):
 		"""Cierra el navegador y limpia recursos."""

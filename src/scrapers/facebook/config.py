@@ -56,6 +56,16 @@ class FacebookConfig(BaseModel):
         default=6,
         description="Número de scrolls sin nuevos elementos antes de detenerse"
     )
+    
+    max_friends: int = Field(
+        default=500,
+        description="Número máximo de amigos a procesar (para limitar scraping)"
+    )
+    
+    user_agent: str = Field(
+        default="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+        description="User Agent por defecto si no se proporciona uno específico"
+    )
 
 
 # Instancia global de configuración
