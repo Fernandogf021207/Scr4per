@@ -154,18 +154,39 @@ class FTPClient:
     
     def check_connection(self) -> bool:
         """
-        Verifica la conectividad con el servidor FTP.
+        Verifica si la conexión FTP está operativa.
+        
+        Intenta:
+        1. Conectar al servidor FTP
+        2. Ejecutar comando NOOP (no-operation)
+        3. Listar directorio raíz
         
         Returns:
             True si la conexión es exitosa, False en caso contrario
+        
+        Example:
+            ftp = get_ftp_client()
+            if ftp.check_connection():
+                print("FTP OK")
+            else:
+                print("FTP Down")
         """
         try:
+            # Intentar conectar (usa retry interno si está decorado)
             ftp = self._connect()
+            
+            # Test 1: NOOP command
             ftp.voidcmd("NOOP")
-            logger.info("FTP connection check successful")
+            
+            # Test 2: List current directory
+            ftp.nlst()
+            
+            logger.info("FTP health check: OK")
             return True
+            
         except Exception as e:
-            logger.error(f"FTP connection check failed: {e}")
+            logger.error(f"FTP health check: FAILED - {e}")
+            self._disconnect()  # Limpiar conexión fallida
             return False
     
     def _sanitize_path(self, path_part: str) -> str:

@@ -1,4 +1,5 @@
 from fastapi import APIRouter, HTTPException
+from fastapi.responses import JSONResponse
 from ..db import get_conn
 from src.utils.ftp_storage import get_ftp_client
 
@@ -7,68 +8,53 @@ router = APIRouter()
 @router.get("/health")
 def health():
     """
-    Health check endpoint con verificaciones profundas de DB y FTP.
+    Health check profundo que verifica toda la infraestructura crítica.
+    
+    Verifica:
+    1. Base de datos PostgreSQL (SELECT 1)
+    2. FTP Storage (conexión y comando NOOP)
     
     Returns:
-        200: Si DB y FTP están operativos
-        503: Si algún servicio falla
-        
-    Response:
-        {
-            "status": "ok" | "degraded" | "error",
-            "services": {
-                "database": {"status": "ok" | "error", "message": str},
-                "ftp": {"status": "ok" | "error", "message": str}
-            }
-        }
+        200 OK: {"status": "ok", "database": "ok", "storage": "ok"}
+        503 Service Unavailable: {"status": "degraded", "database": "ok", "storage": "disconnected"}
     """
-    db_status = {"status": "error", "message": ""}
-    ftp_status = {"status": "error", "message": ""}
-    overall_status = "error"
+    health_status = {
+        "status": "ok",
+        "database": "unknown",
+        "storage": "unknown"
+    }
     
-    # Check Database
+    # Check 1: Database
     try:
         with get_conn() as conn:
             with conn.cursor() as cur:
                 cur.execute("SELECT 1 AS ok")
-                result = cur.fetchone()
-                if result and result["ok"] == 1:
-                    db_status = {"status": "ok", "message": "Database connection successful"}
+                result = cur.fetchone()["ok"]
+                if result == 1:
+                    health_status["database"] = "ok"
                 else:
-                    db_status = {"status": "error", "message": "Unexpected database response"}
+                    health_status["database"] = "error"
     except Exception as e:
-        db_status = {"status": "error", "message": f"Database error: {str(e)}"}
+        health_status["database"] = f"error: {str(e)}"
+        health_status["status"] = "degraded"
     
-    # Check FTP
+    # Check 2: FTP Storage
     try:
         ftp_client = get_ftp_client()
         if ftp_client.check_connection():
-            ftp_status = {"status": "ok", "message": "FTP connection successful"}
+            health_status["storage"] = "ok"
         else:
-            ftp_status = {"status": "error", "message": "FTP connection failed"}
+            health_status["storage"] = "disconnected"
+            health_status["status"] = "degraded"
     except Exception as e:
-        ftp_status = {"status": "error", "message": f"FTP error: {str(e)}"}
+        health_status["storage"] = f"error: {str(e)}"
+        health_status["status"] = "degraded"
     
-    # Determine overall status
-    if db_status["status"] == "ok" and ftp_status["status"] == "ok":
-        overall_status = "ok"
-        status_code = 200
-    elif db_status["status"] == "ok" or ftp_status["status"] == "ok":
-        overall_status = "degraded"
-        status_code = 503
-    else:
-        overall_status = "error"
-        status_code = 503
+    # Determinar código de respuesta
+    if health_status["status"] == "degraded":
+        return JSONResponse(
+            status_code=503,
+            content=health_status
+        )
     
-    response = {
-        "status": overall_status,
-        "services": {
-            "database": db_status,
-            "ftp": ftp_status
-        }
-    }
-    
-    if status_code != 200:
-        raise HTTPException(status_code=status_code, detail=response)
-    
-    return response
+    return health_status
