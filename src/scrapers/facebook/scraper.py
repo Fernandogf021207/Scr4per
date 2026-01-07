@@ -3,14 +3,183 @@ import logging
 from typing import Dict, List, Optional
 import urllib.parse
 
-from src.scrapers.facebook.config import FACEBOOK_CONFIG
+from src.scrapers.facebook.config import FACEBOOK_CONFIG, FACEBOOK_CONFIG_PYDANTIC
 from src.scrapers.facebook.utils import normalize_profile_url, get_text, get_attr, absolute_url_keep_query
 from src.utils.dom import find_scroll_container, scroll_collect
 from src.utils.list_parser import build_user_item
 from src.utils.common import limpiar_url
 from src.utils.url import normalize_input_url, normalize_post_url
+from src.utils.exceptions import (
+    SessionExpiredException,
+    AccountBannedException,
+    LayoutChangeException,
+    NetworkException
+)
 
 logger = logging.getLogger(__name__)
+
+
+# ---------- Early Exit: Validación de Sesión ----------
+async def validate_session_integrity(page, account_id: int = None, platform: str = "facebook"):
+    """
+    Validación temprana de la sesión (Early Exit).
+    
+    Verifica que la sesión esté activa y no bloqueada ANTES de comenzar scraping.
+    Debe ejecutarse en < 5 segundos tras la carga inicial de Facebook.
+    
+    Checks:
+    1. URL Check: Detecta redirección a login.php o checkpoint
+    2. Visual Check: Busca elementos de login o mensajes de bloqueo
+    3. Positive Check: Verifica navegación presente (sesión válida)
+    
+    Args:
+        page: Playwright Page object
+        account_id: ID de la cuenta del pool (para logging)
+        platform: Plataforma (siempre 'facebook')
+    
+    Raises:
+        SessionExpiredException: Si detecta login/logout
+        AccountBannedException: Si detecta checkpoint/bloqueo
+        LayoutChangeException: Si no encuentra elementos críticos
+        NetworkException: Si hay timeout de red
+    
+    Example:
+        await page.goto("https://www.facebook.com/")
+        await validate_session_integrity(page, account_id=42)
+        # Si llega aquí, la sesión es válida
+    """
+    config = FACEBOOK_CONFIG_PYDANTIC.validation
+    
+    try:
+        # Esperar un momento para que la página se estabilice
+        await page.wait_for_timeout(1000)
+        
+        # Check 1: URL Check
+        current_url = page.url.lower()
+        
+        if "login.php" in current_url:
+            logger.error(f"[Account {account_id}] Sesión expirada: Redirigido a login.php")
+            raise SessionExpiredException(
+                "Redirigido a página de login",
+                account_id=account_id,
+                platform=platform,
+                detected_element="URL: login.php"
+            )
+        
+        if "/checkpoint/" in current_url or "checkpoint" in current_url:
+            logger.error(f"[Account {account_id}] Cuenta bloqueada: Checkpoint detectado en URL")
+            raise AccountBannedException(
+                "Checkpoint de seguridad detectado en URL",
+                account_id=account_id,
+                platform=platform,
+                ban_type="checkpoint"
+            )
+        
+        # Check 2: Visual Check - Elementos de Login
+        if config.check_login_elements:
+            # Buscar input de email (señal de login)
+            login_input = await page.query_selector('input[name="email"]')
+            if login_input:
+                logger.error(f"[Account {account_id}] Sesión expirada: input[name='email'] presente")
+                raise SessionExpiredException(
+                    "Detectado input de login en página",
+                    account_id=account_id,
+                    platform=platform,
+                    detected_element="input[name='email']"
+                )
+            
+            # Buscar botón "Crear cuenta" (señal de logout)
+            crear_cuenta_selectors = [
+                'a[href*="/reg/"]',
+                'button:has-text("Create new account")',
+                'button:has-text("Crear cuenta")',
+                'a:has-text("Sign Up")',
+                'a:has-text("Registrarse")'
+            ]
+            for selector in crear_cuenta_selectors:
+                try:
+                    element = await page.query_selector(selector)
+                    if element:
+                        logger.error(f"[Account {account_id}] Sesión expirada: Botón crear cuenta presente")
+                        raise SessionExpiredException(
+                            "Detectado botón de crear cuenta (usuario no logueado)",
+                            account_id=account_id,
+                            platform=platform,
+                            detected_element=selector
+                        )
+                except Exception:
+                    pass
+        
+        # Check 3: Visual Check - Mensajes de Bloqueo
+        if config.check_ban_messages:
+            ban_texts = [
+                "Tu cuenta ha sido inhabilitada",
+                "Your account has been disabled",
+                "Temporary block",
+                "Bloqueo temporal",
+                "We've detected suspicious activity",
+                "Hemos detectado actividad sospechosa",
+                "Cuenta restringida",
+                "Account restricted"
+            ]
+            
+            page_content = await page.content()
+            for ban_text in ban_texts:
+                if ban_text.lower() in page_content.lower():
+                    logger.error(f"[Account {account_id}] Cuenta bloqueada: Texto '{ban_text}' encontrado")
+                    raise AccountBannedException(
+                        f"Mensaje de bloqueo detectado: '{ban_text}'",
+                        account_id=account_id,
+                        platform=platform,
+                        ban_type="disabled" if "disabled" in ban_text.lower() else "temp_block"
+                    )
+        
+        # Check 4: Positive Check - Verificar Navegación
+        if config.check_navigation:
+            # Buscar elementos de navegación que indican sesión válida
+            navigation_selectors = [
+                'div[role="navigation"]',
+                'nav',
+                'a[aria-label*="Profile"]',
+                'a[aria-label*="Perfil"]',
+                'div[aria-label="Facebook"]'
+            ]
+            
+            navigation_found = False
+            for selector in navigation_selectors:
+                try:
+                    element = await page.query_selector(selector)
+                    if element:
+                        navigation_found = True
+                        break
+                except Exception:
+                    pass
+            
+            if not navigation_found:
+                logger.warning(f"[Account {account_id}] No se encontró navegación esperada")
+                # Esto podría ser cambio de layout, no necesariamente sesión mala
+                # Solo lanzar si no hay ningún selector
+                raise LayoutChangeException(
+                    "No se encontraron elementos de navegación esperados",
+                    account_id=account_id,
+                    platform=platform,
+                    missing_selector="div[role='navigation'] y alternativas"
+                )
+        
+        logger.info(f"[Account {account_id}] ✅ Validación de sesión exitosa")
+    
+    except (SessionExpiredException, AccountBannedException, LayoutChangeException):
+        # Re-lanzar excepciones de scraper tal cual
+        raise
+    
+    except Exception as e:
+        # Cualquier otro error (timeout, network, etc)
+        logger.error(f"[Account {account_id}] Error durante validación: {e}")
+        raise NetworkException(
+            f"Error de red durante validación: {str(e)}",
+            account_id=account_id,
+            platform=platform
+        )
 
 
 # ---------- Helper: Cerrar modales molestos ----------
@@ -85,11 +254,27 @@ async def cerrar_modal_bloqueante(page, max_intentos: int = 3):
 
 
 # ---------- Perfil principal ----------
-async def obtener_datos_usuario_facebook(page, perfil_url: str) -> dict:
-	"""Obtiene nombre, username (slug o id) y foto del perfil principal."""
+async def obtener_datos_usuario_facebook(page, perfil_url: str, validate_session: bool = False, account_id: int = None) -> dict:
+	"""
+	Obtiene nombre, username (slug o id) y foto del perfil principal.
+	
+	Args:
+		page: Playwright Page object
+		perfil_url: URL del perfil de Facebook
+		validate_session: Si True, ejecuta validación de sesión antes de scraping
+		account_id: ID de cuenta del pool (para logging y early exit)
+	
+	Returns:
+		Dict con username, nombre_completo, foto_perfil, url_usuario
+	"""
 	perfil_url = normalize_input_url('facebook', perfil_url)
 	await page.goto(perfil_url)
 	await page.wait_for_timeout(3000)
+	
+	# Early Exit: Validar sesión si se solicita
+	if validate_session:
+		await validate_session_integrity(page, account_id=account_id, platform="facebook")
+	
 	# Cerrar modal bloqueante si aparece
 	await cerrar_modal_bloqueante(page)
 

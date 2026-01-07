@@ -2,15 +2,25 @@
 __pycache__/
 *.py[cod]
 *.pyc
+# Byte-compiled / optimized / DLL files
+*.pyo
+*.pyd
+# C extensions
+*.so
 
 # Data and storage
 data/storage/
 data/output/
 src/data/storage/
 
+# Playwright / browser storage states (may contain session cookies)
+data/storage/*_storage_state.json
+**/storage_state.json
+
 # Logs
 logs/
 scraper.log
+*.log
 
 # Secrets
 src/config/secrets.py
@@ -18,10 +28,16 @@ src/config/secrets.py
 # Virtual environment
 venv/
 .env
+# Common virtualenv names
+.venv/
+env/
+ENV/
 
 # IDE files
 .vscode/
 .idea/
+# JetBrains
+*.iml
 
 # Dependency lock files
 Pipfile.lock
@@ -30,5 +46,49 @@ poetry.lock
 tests/
 migrations/
 api/data/
+scripts
+docs
+postman
+# OS files
+.DS_Store
+Thumbs.db
 
-.gitignore/ 
+# Build / distribution
+build/
+dist/
+*.egg-info/
+*.egg
+
+# Python packaging
+pip-wheel-metadata/
+
+# Temporary files
+*.tmp
+*.swp
+
+# Test and coverage
+.pytest_cache/
+.coverage
+coverage.xml
+htmlcov/
+
+# SQLite
+*.db
+*.sqlite3
+
+# Node / frontend
+node_modules/
+npm-debug.log
+
+# Playwright artifacts (traces, videos, screenshots)
+playwright-report/
+test-results/
+*.zip
+
+# Ignore local secrets and env files
+.env.local
+.env.*
+
+# Ignore generated storage states and large binary outputs
+data/graph_session/
+data/images/

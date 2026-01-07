@@ -64,6 +64,7 @@ def create_app() -> FastAPI:
     from .routers.batch_analyze import router as batch_analyze_router
     from .routers.targets import router as targets_router
     from .routers.realtime import router as realtime_router
+    from .routers.pool import router as pool_router
 
     app.include_router(health_router)
     app.include_router(proxy_router)
@@ -82,6 +83,7 @@ def create_app() -> FastAPI:
     app.include_router(batch_analyze_router)
     app.include_router(targets_router)
     app.include_router(realtime_router)
+    app.include_router(pool_router)
 
     return app
 
