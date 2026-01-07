@@ -160,7 +160,118 @@ Para Instagram/Facebook puedes reutilizar el mismo patrón, usando `platform` ig
 - "platform mismatch for post_url": el post existe con otra plataforma; verifica los datos.
 - Duplicados: los `ON CONFLICT` evitan duplicados y devuelven `inserted=false`.
 
-## 11) Limpieza
+## 11) Endpoint Multi-Related (Enriquecimiento Incremental)
+
+El endpoint `POST /multi-related` permite extraer un subgrafo desde la base de datos sin realizar nuevo scraping. Es útil para:
+
+- Obtener el grafo completo de relaciones para múltiples perfiles
+- Explorar conexiones de segundo o tercer grado (amigos de amigos)
+- Exportar datos para visualización o análisis
+- Actualizaciones incrementales después de scrapear nuevos perfiles
+
+### Ejemplo de Request
+
+```bash
+curl -X POST http://localhost:8000/multi-related \
+  -H "Content-Type: application/json" \
+  -d '{
+    "roots": [
+      {"platform": "instagram", "username": "user1"},
+      {"platform": "instagram", "username": "user2"}
+    ],
+    "depth": 2,
+    "include_inter_root_relations": true,
+    "max_profiles": 500
+  }'
+```
+
+### Parámetros
+
+- `roots` (requerido): Lista de 1-10 perfiles desde donde iniciar (platform + username)
+- `depth` (opcional, default=1): Profundidad de conexiones (1-3)
+  - `1` = solo conexiones directas
+  - `2` = amigos de amigos
+  - `3` = conexiones de 3er grado
+- `include_inter_root_relations` (opcional, default=true): Incluir relaciones directas entre los roots
+- `relation_types` (opcional): Filtrar por tipos específicos: `["follower", "following", "friend", "commented", "reacted"]`
+- `max_profiles` (opcional): Límite de perfiles totales para controlar rendimiento (1-5000)
+
+### Ejemplo de Response
+
+```json
+{
+  "schema_version": 2,
+  "root_profiles": ["instagram:user1", "instagram:user2"],
+  "profiles": [
+    {
+      "platform": "instagram",
+      "username": "user1",
+      "full_name": "User One",
+      "profile_url": "https://instagram.com/user1/",
+      "photo_url": "/storage/images/user1.jpg",
+      "is_root": true,
+      "depth_level": 0,
+      "updated_at": "2025-10-15T10:30:00"
+    },
+    {
+      "platform": "instagram",
+      "username": "common_friend",
+      "full_name": "Common Friend",
+      "profile_url": "https://instagram.com/common_friend/",
+      "photo_url": "/storage/images/common_friend.jpg",
+      "is_root": false,
+      "depth_level": 1,
+      "updated_at": "2025-10-15T10:30:00"
+    }
+  ],
+  "relations": [
+    {
+      "platform": "instagram",
+      "source": "user1",
+      "target": "common_friend",
+      "type": "following",
+      "created_at": "2025-10-15T10:30:00"
+    },
+    {
+      "platform": "instagram",
+      "source": "user2",
+      "target": "common_friend",
+      "type": "following",
+      "created_at": "2025-10-15T10:30:00"
+    }
+  ],
+  "meta": {
+    "roots_requested": 2,
+    "roots_found": 2,
+    "total_profiles": 25,
+    "total_relations": 48,
+    "depth_executed": 2,
+    "query_duration_ms": 145,
+    "truncated": false,
+    "request_id": "abc123def456"
+  },
+  "warnings": []
+}
+```
+
+### Casos de Uso
+
+1. **Visualización de Red Social**: Obtener todos los perfiles y conexiones para renderizar un grafo interactivo
+2. **Análisis de Comunidades**: Explorar clusters y amigos en común entre múltiples usuarios
+3. **Exportación de Datos**: Obtener snapshot del grafo completo en un momento dado
+4. **Actualización Incremental**: Después de scraper nuevos perfiles, extraer el grafo actualizado sin re-scraping
+
+### Diferencias con /multi-scrape
+
+| Aspecto | /multi-scrape | /multi-related |
+|---------|---------------|----------------|
+| **Origen de datos** | Scraping en vivo (Playwright) | Base de datos existente |
+| **Tiempo de respuesta** | Minutos (30s-2min por root) | Segundos (~100-500ms) |
+| **Requiere storage_state** | Sí (sesión autenticada) | No |
+| **Datos devueltos** | Solo relaciones directas del root | Grafo completo con depth configurable |
+| **Cuándo usar** | Primera vez o actualización | Consulta/visualización de datos ya scraped |
+
+## 12) Limpieza
 
 Para borrar todo el esquema (¡destructivo!):
 

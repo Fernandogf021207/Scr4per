@@ -85,11 +85,9 @@ def normalize_input_url(platform: str, url: str) -> str:
             path = path.rstrip('/') + '/'
     elif plat == 'x':
         query = ''
-        # No trailing slash normalization needed beyond collapse
-        if path != '/' and path.endswith('/'):
-            # Keep trailing slash for pure profile path, but not for /status/...
-            if '/status/' in path:
-                path = path.rstrip('/')
+        # Strip trailing slash for profiles and posts (keep root as '/')
+        if path != '/':
+            path = path.rstrip('/')
     normalized = urlunparse(('https', host, path, '', query, fragment))
     return normalized
 

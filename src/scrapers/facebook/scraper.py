@@ -2,6 +2,7 @@ import asyncio
 import logging
 from typing import Dict, List, Optional
 import urllib.parse
+from playwright.async_api import Browser, BrowserContext, Page, async_playwright
 
 from src.scrapers.facebook.config import FACEBOOK_CONFIG, FACEBOOK_CONFIG_PYDANTIC
 from src.scrapers.facebook.utils import normalize_profile_url, get_text, get_attr, absolute_url_keep_query
@@ -358,10 +359,9 @@ async def extraer_usuarios_listado(page, tipo_lista: str, usuario_principal: str
 	"""
 	usuarios: Dict[str, dict] = {}
 
-	cfg = FACEBOOK_CONFIG.get('scroll', {})
-	max_scrolls = int(cfg.get('max_scrolls', 60))
-	pause_ms = int(cfg.get('pause_ms', 3500))
-	max_no_new = int(cfg.get('max_no_new', 6))
+	max_scrolls = facebook_config.max_scrolls
+	pause_ms = facebook_config.scroll_pause_ms
+	max_no_new = facebook_config.max_no_new
 
 	async def _extract_visible_batch(page_) -> List[dict]:
 		js = '''

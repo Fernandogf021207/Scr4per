@@ -37,7 +37,7 @@ from src.scrapers.facebook.scraper import (
     scrap_comentarios_fotos as fb_scrap_comments,
     scrap_reacciones_fotos as fb_scrap_reactions,
 )
-from src.scrapers.facebook.config import FACEBOOK_CONFIG
+# Nota: FACEBOOK_CONFIG ya no existe - sesiones ahora en DB via ScrapingService
 from src.scrapers.instagram.scraper import (
     obtener_datos_usuario_principal as ig_obtener_datos,
     scrap_seguidores as ig_scrap_followers,
@@ -55,9 +55,13 @@ from src.scrapers.x.scraper import (
 from src.scrapers.x.config import X_CONFIG
 from src.utils.url import normalize_input_url, extract_username_from_url, normalize_post_url
 from src.utils.images import local_or_proxy_photo_url
+import re
+import logging
 
 # Load env variables from ./db/.env if present
 load_dotenv(dotenv_path=os.path.join(os.path.dirname(__file__), '..', 'db', '.env'))
+
+logger = logging.getLogger(__name__)
 
 DB_CONFIG = {
     "host": os.getenv("POSTGRES_HOST"),
@@ -95,6 +99,8 @@ _storage_candidates = [
 ]
 for _cand in _storage_candidates:
     if os.path.isdir(_cand):
+        # Mount both canonical and compat prefixes to the same directory
+        app.mount("/data/storage", StaticFiles(directory=_cand), name="data_storage")
         app.mount("/storage", StaticFiles(directory=_cand), name="storage")
         break
 
@@ -157,9 +163,9 @@ class GraphSessionIn(BaseModel):
 class ExportInput(BaseModel):
     perfil_objetivo: Dict[str, Any] = Field(alias="Perfil objetivo")
     perfiles_relacionados: List[Dict[str, Any]] = Field(alias="Perfiles relacionados")
-
-    class Config:
-        allow_population_by_field_name = True
+    model_config = {
+        'populate_by_name': True,
+    }
 
 # ---------- DB helpers ----------
 
@@ -269,6 +275,7 @@ async def proxy_image(url: str = Query(..., description="URL de la imagen extern
     - Recibe: ?url=<URL completa de la imagen>
     - Devuelve: imagen en streaming
     """
+    logger.info(f"proxy_image request url={url[:150]}")
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
             resp = await client.get(url)
@@ -281,9 +288,11 @@ async def proxy_image(url: str = Query(..., description="URL de la imagen extern
             
             # Convertir contenido a BytesIO
             image_bytes = io.BytesIO(resp.content)
+            logger.debug(f"proxy_image success url={url[:100]} size={len(resp.content)}")
             return StreamingResponse(image_bytes, media_type=content_type)
     
     except httpx.HTTPError as e:
+        logger.warning(f"proxy_image http_error url={url[:100]} err={e}")
         raise HTTPException(status_code=500, detail=f"Error al obtener la imagen: {str(e)}")
     
 @app.get("/graph-session/{platform}/{owner_username}")
@@ -454,8 +463,9 @@ def create_reaction(r: ReactionIn):
 # ---------- Scraper Orchestrator ----------
 
 def _storage_state_for(platform: str) -> str:
+    """Fallback para código legacy. Nuevas implementaciones deben usar ScrapingService."""
     if platform == 'facebook':
-        return FACEBOOK_CONFIG.get('storage_state_path')
+        return 'data/storage/facebook_storage_state.json'
     if platform == 'instagram':
         return INSTAGRAM_CONFIG.get('storage_state_path')
     if platform == 'x':
@@ -472,6 +482,29 @@ def _extract_fields(item: Dict[str, Any]) -> Dict[str, Optional[str]]:
         'profile_url': (item or {}).get('link_usuario') or (item or {}).get('profile_url'),
         'photo_url': (item or {}).get('foto_usuario') or (item or {}).get('photo_url'),
     }
+
+async def _recover_photo_via_og(profile_url: str, username: str, page) -> str:
+    """Recupera la URL de imagen de perfil consultando el HTML y extrayendo meta og:image.
+    Devuelve la URL directa (CDN) sin descargar; el flujo de descarga la procesará después.
+    """
+    if not profile_url or not page:
+        return ''
+    try:
+        resp = await page.request.get(profile_url, timeout=10000)
+        if not resp.ok:
+            logger.debug(f"_recover_photo_via_og failed status={resp.status} url={profile_url}")
+            return ''
+        html = await resp.text()
+        # Buscar meta property="og:image"
+        m = re.search(r'<meta[^>]+property=["\']og:image["\'][^>]+content=["\']([^"\']+)["\']', html, re.IGNORECASE)
+        if m:
+            og_url = m.group(1)
+            logger.info(f"_recover_photo_via_og found username={username} og_url={og_url[:100]}")
+            return og_url
+    except Exception as e:
+        logger.debug(f"_recover_photo_via_og exception username={username} err={e}")
+        return ''
+    return ''
 
 def _to_spanish_rel(rel_type: str) -> str:
     mapping = {
@@ -688,11 +721,19 @@ async def scrape(req: ScrapeRequest):
                 with conn.cursor() as cur:
                     # Ensure target profile exists (store local photo path)
                     try:
-                        if perfil_obj.get('photo_url'):
+                        photo_url = perfil_obj.get('photo_url')
+                        # If empty and we have profile_url, try OG recovery (FB/IG/X)
+                        if not photo_url and perfil_obj.get('profile_url') and platform in ('facebook','instagram','x'):
+                            logger.info(f"Attempting OG recovery for target profile username={perfil_obj.get('username')}")
+                            photo_url = await _recover_photo_via_og(perfil_obj['profile_url'], perfil_obj.get('username'), page)
+                            if photo_url:
+                                perfil_obj['photo_url'] = photo_url
+                        
+                        if photo_url:
                             # Skip if already local
-                            if not str(perfil_obj['photo_url']).startswith('/storage/'):
+                            if not str(photo_url).startswith('/storage/') and not str(photo_url).startswith('/../data/storage/'):
                                 perfil_obj['photo_url'] = await local_or_proxy_photo_url(
-                                    perfil_obj.get('photo_url'),
+                                    photo_url,
                                     perfil_obj.get('username'),
                                     mode='download',
                                     page=page,
@@ -700,7 +741,8 @@ async def scrape(req: ScrapeRequest):
                                     retries=5,
                                     backoff_seconds=0.5,
                                 )
-                    except Exception:
+                    except Exception as e:
+                        logger.warning(f"Failed to download target profile photo username={perfil_obj.get('username')} err={e}")
                         perfil_obj['photo_url'] = ""
                     upsert_profile(
                         cur,
@@ -733,9 +775,15 @@ async def scrape(req: ScrapeRequest):
                     for u in followers_usernames:
                         f = by_username.get(u, {})
                         photo_local = f.get('photo_url')
+                        # Attempt OG recovery if empty (FB/IG/X)
+                        if not photo_local and f.get('profile_url') and platform in ('facebook','instagram','x'):
+                            photo_local = await _recover_photo_via_og(f['profile_url'], u, page)
+                            if photo_local:
+                                f['photo_url'] = photo_local
+                        
                         if photo_local:
                             try:
-                                if not str(photo_local).startswith('/storage/'):
+                                if not str(photo_local).startswith('/storage/') and not str(photo_local).startswith('/../data/storage/'):
                                     photo_local = await local_or_proxy_photo_url(
                                         photo_local,
                                         u,
@@ -745,16 +793,23 @@ async def scrape(req: ScrapeRequest):
                                         retries=5,
                                         backoff_seconds=0.5,
                                     )
-                            except Exception:
+                            except Exception as e:
+                                logger.warning(f"Failed to download follower photo username={u} err={e}")
                                 photo_local = ""
                         upsert_profile(cur, platform, u, f.get('full_name'), f.get('profile_url'), photo_local)
                         add_relationship(cur, platform, perfil_obj['username'], u, 'follower')
                     for u in following_usernames:
                         f = by_username.get(u, {})
                         photo_local = f.get('photo_url')
+                        # Attempt OG recovery if empty (FB/IG/X)
+                        if not photo_local and f.get('profile_url') and platform in ('facebook','instagram','x'):
+                            photo_local = await _recover_photo_via_og(f['profile_url'], u, page)
+                            if photo_local:
+                                f['photo_url'] = photo_local
+                        
                         if photo_local:
                             try:
-                                if not str(photo_local).startswith('/storage/'):
+                                if not str(photo_local).startswith('/storage/') and not str(photo_local).startswith('/../data/storage/'):
                                     photo_local = await local_or_proxy_photo_url(
                                         photo_local,
                                         u,
@@ -764,7 +819,8 @@ async def scrape(req: ScrapeRequest):
                                         retries=5,
                                         backoff_seconds=0.5,
                                     )
-                            except Exception:
+                            except Exception as e:
+                                logger.warning(f"Failed to download following photo username={u} err={e}")
                                 photo_local = ""
                         upsert_profile(cur, platform, u, f.get('full_name'), f.get('profile_url'), photo_local)
                         add_relationship(cur, platform, perfil_obj['username'], u, 'following')
@@ -773,9 +829,15 @@ async def scrape(req: ScrapeRequest):
                         for u in friends_usernames:
                             f = by_username.get(u, {})
                             photo_local = f.get('photo_url')
+                            # Attempt OG recovery if empty
+                            if not photo_local and f.get('profile_url'):
+                                photo_local = await _recover_photo_via_og(f['profile_url'], u, page)
+                                if photo_local:
+                                    f['photo_url'] = photo_local
+                            
                             if photo_local:
                                 try:
-                                    if not str(photo_local).startswith('/storage/'):
+                                    if not str(photo_local).startswith('/storage/') and not str(photo_local).startswith('/../data/storage/'):
                                         photo_local = await local_or_proxy_photo_url(
                                             photo_local,
                                             u,
@@ -785,7 +847,8 @@ async def scrape(req: ScrapeRequest):
                                             retries=5,
                                             backoff_seconds=0.5,
                                         )
-                                except Exception:
+                                except Exception as e:
+                                    logger.warning(f"Failed to download friend photo username={u} err={e}")
                                     photo_local = ""
                             upsert_profile(cur, platform, u, f.get('full_name'), f.get('profile_url'), photo_local)
                             add_relationship(cur, platform, perfil_obj['username'], u, 'friend')
@@ -805,9 +868,15 @@ async def scrape(req: ScrapeRequest):
                             # Upsert commenter with details if available (store local photo)
                             f = _extract_fields(item)
                             photo_local = f.get('photo_url')
+                            # Attempt OG recovery if empty (FB/IG/X)
+                            if not photo_local and f.get('profile_url') and platform in ('facebook','instagram','x'):
+                                photo_local = await _recover_photo_via_og(f['profile_url'], uname, page)
+                                if photo_local:
+                                    f['photo_url'] = photo_local
+                            
                             if photo_local:
                                 try:
-                                    if not str(photo_local).startswith('/storage/'):
+                                    if not str(photo_local).startswith('/storage/') and not str(photo_local).startswith('/../data/storage/'):
                                         photo_local = await local_or_proxy_photo_url(
                                             photo_local,
                                             uname,
@@ -817,7 +886,8 @@ async def scrape(req: ScrapeRequest):
                                             retries=5,
                                             backoff_seconds=0.5,
                                         )
-                                except Exception:
+                                except Exception as e:
+                                    logger.warning(f"Failed to download commenter photo username={uname} err={e}")
                                     photo_local = ""
                             upsert_profile(cur, platform, uname, f.get('full_name'), f.get('profile_url'), photo_local)
                             try:
@@ -835,9 +905,15 @@ async def scrape(req: ScrapeRequest):
                                 # Upsert reactor with details (store local photo)
                                 f = _extract_fields(rx)
                                 photo_local = f.get('photo_url')
+                                # Attempt OG recovery if empty (FB/IG/X)
+                                if not photo_local and f.get('profile_url') and platform in ('facebook','instagram','x'):
+                                    photo_local = await _recover_photo_via_og(f['profile_url'], uname, page)
+                                    if photo_local:
+                                        f['photo_url'] = photo_local
+                                
                                 if photo_local:
                                     try:
-                                        if not str(photo_local).startswith('/storage/'):
+                                        if not str(photo_local).startswith('/storage/') and not str(photo_local).startswith('/../data/storage/'):
                                             photo_local = await local_or_proxy_photo_url(
                                                 photo_local,
                                                 uname,
@@ -847,7 +923,8 @@ async def scrape(req: ScrapeRequest):
                                                 retries=5,
                                                 backoff_seconds=0.5,
                                             )
-                                    except Exception:
+                                    except Exception as e:
+                                        logger.warning(f"Failed to download reactor photo username={uname} err={e}")
                                         photo_local = ""
                                 upsert_profile(cur, platform, uname, f.get('full_name'), f.get('profile_url'), photo_local)
                                 add_post(cur, platform, perfil_obj['username'], purl)

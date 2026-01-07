@@ -26,18 +26,23 @@ scraper.log
 src/config/secrets.py
 
 # Virtual environment
-venv/
+venvs
 .env
 # Common virtualenv names
 .venv/
 env/
 ENV/
 
+scripts/
+
 # IDE files
 .vscode/
 .idea/
 # JetBrains
 *.iml
+
+#certificados TLS
+certs/
 
 # Dependency lock files
 Pipfile.lock
