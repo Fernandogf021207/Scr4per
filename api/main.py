@@ -27,7 +27,6 @@ def create_app() -> FastAPI:
     try:
         # Avoid reconfiguring if already handled by uvicorn or previous setup
         if not logging.getLogger().handlers:
-            from src.utils.logging_config import setup_logging  # type: ignore
             setup_logging()
         else:
             # Raise root level if default WARNING so our scraper INFO logs show
