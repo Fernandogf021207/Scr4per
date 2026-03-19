@@ -221,7 +221,7 @@ async def ejecutar_analisis_con_pool(
             # 4. Éxito: Liberar cuenta como exitosa (resetea error_count)
             session_manager.release_account(account.id, success=True, db=db)
             logger.info(
-                f"[ID:{id_identidad}] ✅ Análisis exitoso. "
+                f"[ID:{id_identidad}] Análisis exitoso. "
                 f"Cuenta {account.username} liberada y limpia."
             )
         

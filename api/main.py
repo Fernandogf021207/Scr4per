@@ -42,6 +42,7 @@ def create_app() -> FastAPI:
         "http://127.0.0.1:3000",
         "http://192.168.100.207",
         "http://192.168.100.93:5173",
+        "http://192.168.100.92:5173",
         "http://localhost:5173",
         "https://naatintelligence.com",
     ]

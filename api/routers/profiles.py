@@ -11,13 +11,15 @@ def create_or_update_profile(p: ProfileIn):
     try:
         with get_conn() as conn:
             with conn.cursor() as cur:
-                pid = repo.upsert_profile(cur, p.platform, p.username, p.full_name, p.profile_url, p.photo_url)
+                pid = upsert_profile(cur, p.platform, p.username, p.full_name, p.profile_url, p.photo_url, p.facebook_id)
                 conn.commit()
                 schema = _schema(p.platform)
-                # Select by platform+username to ease testing and avoid depending on returned id
+                # facebook_id column only exists in red_facebook.profiles
+                fb_col = "facebook_id" if p.platform == "facebook" else "NULL AS facebook_id"
                 cur.execute(
-                    f"SELECT id, platform, username, full_name, profile_url, photo_url FROM {schema}.profiles WHERE platform=%s AND username=%s",
-                    (p.platform, p.username)
+                    f"SELECT id, platform, username, full_name, profile_url, photo_url, {fb_col} "
+                    f"FROM {schema}.profiles WHERE id=%s",
+                    (pid,)
                 )
                 row = cur.fetchone()
                 return Profile(**row)

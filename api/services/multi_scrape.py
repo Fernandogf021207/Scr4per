@@ -1,15 +1,15 @@
 import asyncio
 import logging
-import os
 import secrets
 import time
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Tuple
 
-from ..deps import storage_state_for
 from ..db import get_conn
 from ..repositories import upsert_profile, add_relationship
 from .adapters import launch_browser, close_browser, get_adapter
+from .pool_session import checkout_pool_session
+from src.services.session_manager import ResourceExhaustedException
 
 logger = logging.getLogger('api.routers.multi_scrape')
 
@@ -34,6 +34,7 @@ async def _process_root(root: Dict[str, Any], browser) -> Dict[str, Any]:
     username = root["username"]
     headless = bool(root.get("headless", True))
     persist = bool(root.get("persist", True))
+    process_images = bool(root.get("process_images", True))
     strict_sessions = bool(root.get("strict_sessions", False))
     tenant = root.get("tenant")
 
@@ -42,100 +43,111 @@ async def _process_root(root: Dict[str, Any], browser) -> Dict[str, Any]:
     profiles_map: Dict[Tuple[str, str], Dict[str, Any]] = {}
     relations: List[Dict[str, Any]] = []
 
-    # Storage-state check (lax policy by default)
-    storage_path = storage_state_for(platform, tenant)
-    if not storage_path or not os.path.isfile(storage_path):
-        msg = f"{rid} missing storage_state"
-        if strict_sessions:
-            raise ValueError("STORAGE_STATE_MISSING")
-        warnings.append({"code": "STORAGE_STATE_MISSING", "message": msg})
-        elapsed = time.perf_counter() - start
-        return {
-            "root_id": rid,
-            "profiles": [],
-            "relations": [],
-            "warnings": warnings,
-            "timing_seconds": elapsed,
-        }
-
-    adapter = get_adapter(platform, browser, tenant)
-
     try:
-        logger.info("root.start rid=%s platform=%s username=%s", rid, platform, username)
-        # Root profile
-        root_prof = await adapter.get_root_profile(username)
-        root_prof["sources"] = [rid]
-        key = (root_prof["platform"], root_prof["username"])
-        if _valid_username(key[1]):
-            profiles_map[key] = root_prof
-
-        # Lists
-        followers = await adapter.get_followers(username, int(root.get("max_photos") or 5))
-        following = await adapter.get_following(username, int(root.get("max_photos") or 5))
-        friends: List[Dict[str, Any]] = []
-        if platform == 'facebook':
-            friends = await adapter.get_friends(username)
-
-        def add_profile(item: Dict[str, Any]):
-            u = item.get("username")
-            if not _valid_username(u) or u == username:
-                return None
-            k = (item["platform"], u)
-            item["sources"] = _merge_sources(item.get("sources", []), [rid])
-            if k in profiles_map:
-                profiles_map[k]["sources"] = _merge_sources(profiles_map[k].get("sources", []), item["sources"]) 
-            else:
-                profiles_map[k] = item
-            return u
-
-        def add_relation(target_username: str, rel_type: str):
-            if not target_username or target_username == username:
-                return
-            relations.append({
-                "platform": platform,
-                "source": username,
-                "target": target_username,
-                "type": rel_type,
-            })
-
-        for it in followers:
-            tu = add_profile(it)
-            if tu:
-                add_relation(tu, 'follower')
-
-        for it in following:
-            tu = add_profile(it)
-            if tu:
-                add_relation(tu, 'following')
-
-        if friends:
-            for it in friends:
-                tu = add_profile(it)
-                if tu:
-                    add_relation(tu, 'friend')
-
-        # Facebook: recolectar perfiles por reacciones y comentarios en fotos públicas
-        if platform == 'facebook':
+        async with checkout_pool_session(platform) as pool_session:
+            adapter = get_adapter(platform, browser, tenant, process_images=process_images, storage_state=pool_session.storage_state)
+            logger.info("root.start rid=%s platform=%s username=%s account_id=%s", rid, platform, username, pool_session.account_id)
+            if platform == 'facebook':
+                await adapter.open_flow_session()
             try:
-                reactors = await adapter.get_photo_reactors(username, int(root.get("max_photos") or 5), include_comment_reactions=False)
-            except Exception as e:
-                reactors = []
-                warnings.append({"code": "FB_REACTORS_FAIL", "message": f"{rid} {e}"})
-            try:
-                commenters = await adapter.get_photo_commenters(username, int(root.get("max_photos") or 5))
-            except Exception as e:
-                commenters = []
-                warnings.append({"code": "FB_COMMENTERS_FAIL", "message": f"{rid} {e}"})
+                # Root profile
+                root_prof = await adapter.get_root_profile(username)
+                root_prof["sources"] = [rid]
+                key = (root_prof["platform"], root_prof["username"])
+                if _valid_username(key[1]):
+                    profiles_map[key] = root_prof
 
-            for it in reactors:
-                tu = add_profile(it)
-                if tu:
-                    add_relation(tu, 'reacted')
+                # Lists
+                followers = await adapter.get_followers(username, int(root.get("max_photos") or 5))
+                following = await adapter.get_following(username, int(root.get("max_photos") or 5))
+                friends: List[Dict[str, Any]] = []
+                if platform == 'facebook':
+                    friends = await adapter.get_friends(username)
+                if platform == 'instagram' and not followers and not following:
+                    warnings.append({
+                        "code": "IG_NETWORK_EMPTY",
+                        "message": f"{rid} followers/following vacios. Posibles causas: perfil privado, sesion no autenticada o cambio de layout.",
+                    })
 
-            for it in commenters:
-                tu = add_profile(it)
-                if tu:
-                    add_relation(tu, 'commented')
+                def add_profile(item: Dict[str, Any]):
+                    u = item.get("username")
+                    if not _valid_username(u) or u == username:
+                        return None
+                    k = (item["platform"], u)
+                    item["sources"] = _merge_sources(item.get("sources", []), [rid])
+                    if k in profiles_map:
+                        profiles_map[k]["sources"] = _merge_sources(profiles_map[k].get("sources", []), item["sources"])
+                    else:
+                        profiles_map[k] = item
+                    return u
+
+                def add_relation(target_username: str, rel_type: str):
+                    if not target_username or target_username == username:
+                        return
+                    relations.append({
+                        "platform": platform,
+                        "source": username,
+                        "target": target_username,
+                        "type": rel_type,
+                    })
+
+                for it in followers:
+                    tu = add_profile(it)
+                    if tu:
+                        add_relation(tu, 'follower')
+
+                for it in following:
+                    tu = add_profile(it)
+                    if tu:
+                        add_relation(tu, 'following')
+
+                if friends:
+                    for it in friends:
+                        tu = add_profile(it)
+                        if tu:
+                            add_relation(tu, 'friend')
+
+                if platform == 'facebook':
+                    try:
+                        reactors = await adapter.get_photo_reactors(username, int(root.get("max_photos") or 5), include_comment_reactions=False)
+                    except Exception as e:
+                        reactors = []
+                        warnings.append({"code": "FB_REACTORS_FAIL", "message": f"{rid} {e}"})
+                    try:
+                        commenters = await adapter.get_photo_commenters(username, int(root.get("max_photos") or 5))
+                    except Exception as e:
+                        commenters = []
+                        warnings.append({"code": "FB_COMMENTERS_FAIL", "message": f"{rid} {e}"})
+
+                if platform == 'instagram':
+                    try:
+                        reactors = await adapter.get_post_reactors(username, int(root.get("max_photos") or 5))
+                    except Exception as e:
+                        reactors = []
+                        warnings.append({"code": "IG_REACTORS_FAIL", "message": f"{rid} {e}"})
+                    try:
+                        commenters = await adapter.get_post_commenters(username, int(root.get("max_photos") or 5))
+                    except Exception as e:
+                        commenters = []
+                        warnings.append({"code": "IG_COMMENTERS_FAIL", "message": f"{rid} {e}"})
+                    if not reactors and not commenters:
+                        warnings.append({
+                            "code": "IG_ENGAGEMENT_EMPTY",
+                            "message": f"{rid} engagement vacio. Posibles causas: sin posts visibles, perfil privado o bloqueo anti-automation.",
+                        })
+
+                    for it in reactors:
+                        tu = add_profile(it)
+                        if tu:
+                            add_relation(tu, 'reacted')
+
+                    for it in commenters:
+                        tu = add_profile(it)
+                        if tu:
+                            add_relation(tu, 'commented')
+            finally:
+                if platform == 'facebook':
+                    await adapter.close_flow_session()
 
         # Persist per root (transaction)
         if persist and profiles_map:
@@ -167,6 +179,19 @@ async def _process_root(root: Dict[str, Any], browser) -> Dict[str, Any]:
             "warnings": warnings,
             "timing_seconds": elapsed,
         }
+    except ResourceExhaustedException as exc:
+        msg = f"{rid} account pool exhausted: {exc}"
+        if strict_sessions:
+            raise ValueError("ACCOUNT_POOL_EXHAUSTED")
+        warnings.append({"code": "ACCOUNT_POOL_EXHAUSTED", "message": msg})
+        elapsed = time.perf_counter() - start
+        return {
+            "root_id": rid,
+            "profiles": [],
+            "relations": [],
+            "warnings": warnings,
+            "timing_seconds": elapsed,
+        }
     except Exception as e:  # pragma: no cover
         logger.exception("root.fail rid=%s error=%s", rid, e)
         warnings.append({"code": "PARTIAL_FAILURE", "message": f"{rid} {str(e)}"})
@@ -189,6 +214,7 @@ async def multi_scrape_execute(request: Dict[str, Any]) -> Dict[str, Any]:
     roots: List[Dict[str, Any]] = request.get("roots", [])
     headless: bool = bool(request.get("headless", True))
     persist: bool = bool(request.get("persist", True))
+    process_images: bool = bool(request.get("process_images", True))
     strict_sessions: bool = bool(request.get("strict_sessions", False))
     max_concurrency: int = int(request.get("max_concurrency") or (1 if len(roots) <= 1 else 3))
     tenant: Any = request.get("tenant")
@@ -218,6 +244,7 @@ async def multi_scrape_execute(request: Dict[str, Any]) -> Dict[str, Any]:
                     r = dict(root)
                     r["headless"] = headless
                     r["persist"] = persist
+                    r["process_images"] = process_images
                     r["strict_sessions"] = strict_sessions
                     r["tenant"] = tenant
                     return await _process_root(r, browser)
@@ -282,6 +309,7 @@ async def multi_scrape_execute(request: Dict[str, Any]) -> Dict[str, Any]:
             "build_ms": build_ms,
             "roots_timings": roots_timings,
             "max_concurrency": max_concurrency,
+            "process_images": process_images,
             "platform_limits": {k: sem_platforms[k]._value if hasattr(sem_platforms[k], "_value") else limits.get(k, max_concurrency) for k in sem_platforms},
         },
     }

@@ -31,14 +31,28 @@ def _ensure_https(url: str) -> str:
 
 
 def normalize_input_url(platform: str, url: str) -> str:
-    """Normalize a profile URL for a given platform.
+    """Normalize a profile URL or plain username for a given platform.
+    - Accepts full URLs (https://...), partial URLs (domain/path), or plain usernames
+    - Strips leading '@' from usernames
     - Ensures https
     - Maps alias domains to canonical
     - Removes duplicate domain artifacts and trailing junk
     """
     if not url:
         return url
-    url = _ensure_https(url.strip())
+    url = url.strip()
+
+    # Strip leading '@' (e.g. '@usuario' → 'usuario')
+    if url.startswith('@'):
+        url = url[1:]
+
+    # Plain username detection: no '/' and no '://' → build full URL
+    plat_pre = (platform or '').lower()
+    canonical_pre = CANONICAL_HOST.get(plat_pre, '')
+    if canonical_pre and '/' not in url and '://' not in url:
+        url = f'https://{canonical_pre}/{url}'
+
+    url = _ensure_https(url)
 
     # Fix accidental duplicated domain like https://x.com.com/user
     # Heuristic: if host ends with '.com.com', collapse to '.com'
@@ -150,3 +164,13 @@ def normalize_post_url(platform: str, url: str) -> str:
         query = ''
 
     return urlunparse(('https', host, path.rstrip('/'), '', query, ''))
+
+
+def absolute_url_keep_query(url: str, base_url: str = "https://www.facebook.com") -> str:
+    """Combina un path relativo con la URL base de Facebook conservando parámetros query."""
+    if not url:
+        return ""
+    if url.startswith("http"):
+        return url
+    from urllib.parse import urljoin
+    return urljoin(base_url, url)

@@ -1,0 +1,5 @@
+2026-03-11 08:30:58,199 [ERROR] Error en extracci¾n 
+2026-03-11 08:31:23,400 [ERROR] Error en Scrapling 
+2026-03-11 08:31:23,401 [ERROR] Traceback (most 
+  File "C:\Users\DarkG\Documents\Github\Scr4per\test
+  File "C:\Users\DarkG\Documents\Github\Scr4per\src\

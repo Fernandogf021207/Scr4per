@@ -1,0 +1,17 @@
+﻿{
+  "perfiles": [
+    {
+      "perfil_objetivo": {"username":"jvgador9","full_name":"JV Gador","profile_url":"https://www.instagram.com/jvgador9/"},
+      "perfiles_relacionados": [
+        {"username":"home","full_name":"home","tipo":"comentó"},
+        {"username":"otro","full_name":"Otro Usuario","tipo_de_relacion":"seguidor"}
+      ]
+    },
+    {
+      "perfil_objetivo": {"username":"usuario2","full_name":"Usuario 2"},
+      "perfiles_relacionados": [
+        {"username":"user3","full_name":"User Three","tipo":"reaccionó"}
+      ]
+    }
+  ]
+}

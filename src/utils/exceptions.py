@@ -120,6 +120,18 @@ class NetworkException(ScraperException):
         self.timeout_seconds = timeout_seconds
 
 
+class SessionNotFoundException(ScraperException):
+    """
+    No existe sesion disponible para el usuario/plataforma solicitados.
+
+    Se usa en flujos BYOS donde el usuario debe vincular previamente
+    una cuenta antes de ejecutar scraping.
+    """
+
+    def __init__(self, message: str, account_id: int = None, platform: str = None):
+        super().__init__(message, account_id, platform)
+
+
 class LayoutChangeException(ScraperException):
     """
     Los selectores CSS/XPath esperados no se encuentran en la página.

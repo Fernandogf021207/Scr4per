@@ -48,22 +48,40 @@ def _schema(platform: str) -> str:
 def upsert_profile(cur, platform: str, username: str,
                    full_name: Optional[str] = None,
                    profile_url: Optional[str] = None,
-                   photo_url: Optional[str] = None) -> int:
+                   photo_url: Optional[str] = None,
+                   facebook_id: Optional[str] = None) -> int:
     schema = _schema(platform)
-    cur.execute(
-        f"""
-        INSERT INTO {schema}.profiles(platform, username, full_name, profile_url, photo_url)
-        VALUES (%s, %s, %s, %s, %s)
-        ON CONFLICT (platform, username)
-        DO UPDATE SET
-            full_name  = COALESCE(NULLIF(EXCLUDED.full_name, ''),  {schema}.profiles.full_name),
-            profile_url= COALESCE(NULLIF(EXCLUDED.profile_url, ''), {schema}.profiles.profile_url),
-            photo_url  = COALESCE(NULLIF(EXCLUDED.photo_url, ''),  {schema}.profiles.photo_url),
-            updated_at = NOW()
-        RETURNING id;
-        """,
-        (platform, username, full_name, profile_url, photo_url)
-    )
+    if platform == 'facebook':
+        cur.execute(
+            f"""
+            INSERT INTO {schema}.profiles(platform, username, full_name, profile_url, photo_url, facebook_id)
+            VALUES (%s, %s, %s, %s, %s, %s)
+            ON CONFLICT (platform, username)
+            DO UPDATE SET
+                full_name   = COALESCE(NULLIF(EXCLUDED.full_name,   ''), {schema}.profiles.full_name),
+                profile_url = COALESCE(NULLIF(EXCLUDED.profile_url, ''), {schema}.profiles.profile_url),
+                photo_url   = COALESCE(NULLIF(EXCLUDED.photo_url,   ''), {schema}.profiles.photo_url),
+                facebook_id = COALESCE(EXCLUDED.facebook_id,            {schema}.profiles.facebook_id),
+                updated_at  = NOW()
+            RETURNING id;
+            """,
+            (platform, username, full_name, profile_url, photo_url, facebook_id)
+        )
+    else:
+        cur.execute(
+            f"""
+            INSERT INTO {schema}.profiles(platform, username, full_name, profile_url, photo_url)
+            VALUES (%s, %s, %s, %s, %s)
+            ON CONFLICT (platform, username)
+            DO UPDATE SET
+                full_name  = COALESCE(NULLIF(EXCLUDED.full_name, ''),  {schema}.profiles.full_name),
+                profile_url= COALESCE(NULLIF(EXCLUDED.profile_url, ''), {schema}.profiles.profile_url),
+                photo_url  = COALESCE(NULLIF(EXCLUDED.photo_url, ''),  {schema}.profiles.photo_url),
+                updated_at = NOW()
+            RETURNING id;
+            """,
+            (platform, username, full_name, profile_url, photo_url)
+        )
     return cur.fetchone()["id"]
 
 def add_relationship(cur, platform: str, owner_username: str, related_username: str, rel_type: str) -> Optional[int]:

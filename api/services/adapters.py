@@ -6,7 +6,6 @@ from typing import Any, Dict, List, Optional
 
 from playwright.async_api import Browser, async_playwright
 
-from ..deps import storage_state_for
 from src.utils.url import normalize_input_url
 from src.utils.images import local_or_proxy_photo_url
 
@@ -53,9 +52,9 @@ def _map_user_item_to_profile(platform: str, item: Dict[str, Any]) -> Dict[str, 
     return {
         'platform': platform,
         'username': item.get('username_usuario') or '',
-        'full_name': item.get('nombre_usuario') or None,
+        'full_name': item.get('nombre_usuario') or item.get('nombre_completo_usuario') or None,
         'profile_url': item.get('link_usuario') or None,
-        'photo_url': item.get('foto_usuario') or None,
+        'photo_url': item.get('foto_usuario') or item.get('url_foto') or None,
     }
 
 
@@ -73,13 +72,14 @@ CONTEXT_OPTS = {
 class InstagramAdapter:
     platform = 'instagram'
 
-    def __init__(self, browser: Browser, tenant: Optional[str] = None):
+    def __init__(self, browser: Browser, tenant: Optional[str] = None, storage_state: Optional[Any] = None):
         self.browser = browser
         self.tenant = tenant
+        self.storage_state = storage_state
+        self._engagement_cache: Dict[tuple, Dict[str, List[Dict[str, Any]]]] = {}
 
     async def _new_page(self):
-        storage = storage_state_for(self.platform, self.tenant)
-        context = await self.browser.new_context(storage_state=storage if storage else None, **CONTEXT_OPTS)
+        context = await self.browser.new_context(storage_state=self.storage_state, **CONTEXT_OPTS)
         page = await context.new_page()
         try:
             logger.info("ctx.open platform=%s tenant=%s ctx=%s", self.platform, self.tenant, id(context))
@@ -207,6 +207,68 @@ class InstagramAdapter:
         finally:
             await context.close()
 
+    async def _get_post_engagement_bundle(self, username: str, max_photos: int = 5, image_base_path: Optional[str] = None) -> Dict[str, List[Dict[str, Any]]]:
+        """Extrae likes+comentarios en una sola pasada y cachea por request/adapter."""
+        cache_key = (username, int(max_photos), image_base_path or '')
+        if cache_key in self._engagement_cache:
+            return self._engagement_cache[cache_key]
+
+        from src.scrapers.instagram.scrapling_spider import scrap_post_engagements_scrapling
+        context, page = await self._new_page()
+        try:
+            logger.info("list.start platform=%s type=post_engagement_bundle username=%s ctx=%s", self.platform, username, id(context))
+            perfil_url = _profile_url(self.platform, username)
+            result = await scrap_post_engagements_scrapling(page, perfil_url, username, max_posts=max_photos)
+
+            reactions_rows = result.get('reactions', []) or []
+            comments_rows = result.get('comments', []) or []
+
+            reactions_out: List[Dict[str, Any]] = [_map_user_item_to_profile(self.platform, r) for r in reactions_rows]
+            comments_out: List[Dict[str, Any]] = [_map_user_item_to_profile(self.platform, r) for r in comments_rows]
+
+            platform_ftp = f"red_{self.platform}"
+            ftp_path = image_base_path if image_base_path else None
+            if ftp_path and not ftp_path.endswith('/'):
+                ftp_path += '/'
+
+            import asyncio
+
+            async def process_image(item):
+                if item.get('photo_url'):
+                    try:
+                        item['photo_url'] = await local_or_proxy_photo_url(
+                            item['photo_url'],
+                            username,
+                            platform_ftp,
+                            mode='download',
+                            photo_owner=item['username'],
+                            page=page,
+                            ftp_path=ftp_path
+                        )
+                    except Exception:
+                        pass
+
+            combined = reactions_out + comments_out
+            if combined:
+                await asyncio.gather(*(process_image(item) for item in combined))
+
+            payload = {
+                'reactions': reactions_out,
+                'comments': comments_out,
+            }
+            self._engagement_cache[cache_key] = payload
+            return payload
+        finally:
+            await context.close()
+
+    async def get_post_reactors(self, username: str, max_photos: int = 5, image_base_path: Optional[str] = None) -> List[Dict[str, Any]]:
+        bundle = await self._get_post_engagement_bundle(username, max_photos=max_photos, image_base_path=image_base_path)
+        return list(bundle.get('reactions', []))
+
+    async def get_post_commenters(self, username: str, max_photos: int = 5, image_base_path: Optional[str] = None) -> List[Dict[str, Any]]:
+        bundle = await self._get_post_engagement_bundle(username, max_photos=max_photos, image_base_path=image_base_path)
+        return list(bundle.get('comments', []))
+
     async def get_friends(self, username: str) -> List[Dict[str, Any]]:
         return []
 
@@ -214,23 +276,72 @@ class InstagramAdapter:
 class FacebookAdapter:
     platform = 'facebook'
 
-    def __init__(self, browser: Browser, tenant: Optional[str] = None):
+    def __init__(self, browser: Browser, tenant: Optional[str] = None, process_images: bool = True, storage_state: Optional[Any] = None):
         self.browser = browser
         self.tenant = tenant
+        self.process_images = process_images
+        self.storage_state = storage_state
+        self._shared_context = None
+        self._shared_page = None
 
     async def _new_page(self):
-        storage = storage_state_for(self.platform, self.tenant)
-        context = await self.browser.new_context(storage_state=storage if storage else None, **CONTEXT_OPTS)
+        if self._shared_context is not None and self._shared_page is not None:
+            return self._shared_context, self._shared_page, False
+        context = await self.browser.new_context(storage_state=self.storage_state, **CONTEXT_OPTS)
         page = await context.new_page()
         try:
             logger.info("ctx.open platform=%s tenant=%s ctx=%s", self.platform, self.tenant, id(context))
         except Exception:
             pass
-        return context, page
+        return context, page, True
+
+    async def open_flow_session(self):
+        if self._shared_context is not None and self._shared_page is not None:
+            return
+        context, page, _ = await self._new_page()
+        self._shared_context = context
+        self._shared_page = page
+
+    async def close_flow_session(self):
+        if self._shared_context is None:
+            return
+        context = self._shared_context
+        self._shared_context = None
+        self._shared_page = None
+        await context.close()
+
+    async def _maybe_process_images(self, items: List[Dict[str, Any]], username: str, page, image_base_path: Optional[str] = None) -> List[Dict[str, Any]]:
+        if not self.process_images or not items:
+            return items
+
+        platform_ftp = f"red_{self.platform}"
+        ftp_path = image_base_path if image_base_path else None
+        if ftp_path and not ftp_path.endswith('/'):
+            ftp_path += '/'
+
+        import asyncio
+
+        async def process_image(item):
+            if item.get('photo_url'):
+                try:
+                    item['photo_url'] = await local_or_proxy_photo_url(
+                        item['photo_url'],
+                        username,
+                        platform_ftp,
+                        mode='download',
+                        photo_owner=item['username'],
+                        page=page,
+                        ftp_path=ftp_path,
+                    )
+                except Exception:
+                    pass
+
+        await asyncio.gather(*(process_image(item) for item in items))
+        return items
 
     async def get_root_profile(self, username: str, image_base_path: Optional[str] = None) -> Dict[str, Any]:
         from src.scrapers.facebook.scraper import obtener_datos_usuario_facebook
-        context, page = await self._new_page()
+        context, page, should_close = await self._new_page()
         try:
             perfil_url = _profile_url(self.platform, username)
             data = await obtener_datos_usuario_facebook(page, perfil_url)
@@ -241,37 +352,44 @@ class FacebookAdapter:
                 'profile_url': data.get('url_usuario') or perfil_url,
                 'photo_url': data.get('foto_perfil') or None,
             }
-            if prof.get('photo_url'):
-                platform_ftp = f"red_{self.platform}"
-                
-                # Prepare ftp_path
+            if self.process_images and prof.get('photo_url'):
                 ftp_path = image_base_path if image_base_path else None
                 if ftp_path and not ftp_path.endswith('/'):
                     ftp_path += '/'
-                
                 prof['photo_url'] = await local_or_proxy_photo_url(
-                    prof['photo_url'], 
-                    username, 
-                    platform_ftp, 
-                    mode='download', 
-                    photo_owner=prof['username'], 
+                    prof['photo_url'],
+                    username,
+                    f"red_{self.platform}",
+                    mode='download',
+                    photo_owner=prof['username'],
                     page=page,
-                    ftp_path=ftp_path
+                    ftp_path=ftp_path,
                 )
             return prof
         finally:
-            await context.close()
+            if should_close:
+                await context.close()
 
     async def _list(self, username: str, lista: str, image_base_path: Optional[str] = None) -> List[Dict[str, Any]]:
-        from src.scrapers.facebook.scraper import navegar_a_lista, extraer_usuarios_listado
-        context, page = await self._new_page()
+        from src.scrapers.facebook.scraper import (
+            scrap_friends_all,
+            scrap_followed,
+            scrap_followers,
+        )
+        context, page, should_close = await self._new_page()
         try:
             logger.info("list.start platform=%s type=%s username=%s ctx=%s", self.platform, lista, username, id(context))
             perfil_url = _profile_url(self.platform, username)
-            ok = await navegar_a_lista(page, perfil_url, lista)
-            if not ok:
+            fetcher = {
+                'followers': scrap_followers,
+                'followed': scrap_followed,
+                'friends_all': scrap_friends_all,
+            }.get(lista)
+            if fetcher is None:
+                logger.warning("list.unsupported platform=%s type=%s username=%s", self.platform, lista, username)
                 return []
-            rows = await extraer_usuarios_listado(page, lista, username)
+
+            rows = await fetcher(page, perfil_url, username)
             platform_ftp = f"red_{self.platform}"
             
             # Prepare ftp_path
@@ -283,29 +401,11 @@ class FacebookAdapter:
             for r in rows:
                 item = _map_user_item_to_profile(self.platform, r)
                 out.append(item)
-            
-            import asyncio
-            async def process_image(item):
-                if item.get('photo_url'):
-                    try:
-                        item['photo_url'] = await local_or_proxy_photo_url(
-                            item['photo_url'], 
-                            username, 
-                            platform_ftp, 
-                            mode='download', 
-                            photo_owner=item['username'], 
-                            page=page,
-                            ftp_path=ftp_path
-                        )
-                    except Exception:
-                        pass
-            
-            if out:
-                await asyncio.gather(*(process_image(item) for item in out))
 
-            return out
+            return await self._maybe_process_images(out, username, page, image_base_path=image_base_path)
         finally:
-            await context.close()
+            if should_close:
+                await context.close()
 
     async def get_followers(self, username: str, max_photos: int = 5, image_base_path: Optional[str] = None) -> List[Dict[str, Any]]:
         return await self._list(username, 'followers', image_base_path)
@@ -321,102 +421,54 @@ class FacebookAdapter:
         Nota: La relación en orquestador será 'reacted'.
         """
         from src.scrapers.facebook.scraper import scrap_reacciones_fotos
-        context, page = await self._new_page()
+        context, page, should_close = await self._new_page()
         try:
             logger.info("list.start platform=%s type=photo_reactors username=%s ctx=%s", self.platform, username, id(context))
             perfil_url = _profile_url(self.platform, username)
             rows = await scrap_reacciones_fotos(page, perfil_url, username, max_fotos=max_photos, incluir_comentarios=include_comment_reactions)
-            platform_ftp = f"red_{self.platform}"
-            
-            # Prepare ftp_path
-            ftp_path = image_base_path if image_base_path else None
-            if ftp_path and not ftp_path.endswith('/'):
-                ftp_path += '/'
 
             out: List[Dict[str, Any]] = []
             for r in rows:
                 item = _map_user_item_to_profile(self.platform, r)
                 out.append(item)
-            
-            import asyncio
-            async def process_image(item):
-                if item.get('photo_url'):
-                    try:
-                        item['photo_url'] = await local_or_proxy_photo_url(
-                            item['photo_url'], 
-                            username, 
-                            platform_ftp, 
-                            mode='download', 
-                            photo_owner=item['username'], 
-                            page=page,
-                            ftp_path=ftp_path
-                        )
-                    except Exception:
-                        pass
-            
-            if out:
-                await asyncio.gather(*(process_image(item) for item in out))
 
-            return out
+            return await self._maybe_process_images(out, username, page, image_base_path=image_base_path)
         finally:
-            await context.close()
+            if should_close:
+                await context.close()
 
     async def get_photo_commenters(self, username: str, max_photos: int = 5, image_base_path: Optional[str] = None) -> List[Dict[str, Any]]:
         """Devuelve perfiles que comentaron en las últimas fotos públicas del usuario.
         Nota: La relación en orquestador será 'commented'.
         """
         from src.scrapers.facebook.scraper import scrap_comentarios_fotos
-        context, page = await self._new_page()
+        context, page, should_close = await self._new_page()
         try:
             logger.info("list.start platform=%s type=photo_commenters username=%s ctx=%s", self.platform, username, id(context))
             perfil_url = _profile_url(self.platform, username)
             rows = await scrap_comentarios_fotos(page, perfil_url, username, max_fotos=max_photos)
-            platform_ftp = f"red_{self.platform}"
-            
-            # Prepare ftp_path
-            ftp_path = image_base_path if image_base_path else None
-            if ftp_path and not ftp_path.endswith('/'):
-                ftp_path += '/'
 
             out: List[Dict[str, Any]] = []
             for r in rows:
                 item = _map_user_item_to_profile(self.platform, r)
                 out.append(item)
-            
-            import asyncio
-            async def process_image(item):
-                if item.get('photo_url'):
-                    try:
-                        item['photo_url'] = await local_or_proxy_photo_url(
-                            item['photo_url'], 
-                            username, 
-                            platform_ftp, 
-                            mode='download', 
-                            photo_owner=item['username'], 
-                            page=page,
-                            ftp_path=ftp_path
-                        )
-                    except Exception:
-                        pass
-            
-            if out:
-                await asyncio.gather(*(process_image(item) for item in out))
 
-            return out
+            return await self._maybe_process_images(out, username, page, image_base_path=image_base_path)
         finally:
-            await context.close()
+            if should_close:
+                await context.close()
 
 
 class XAdapter:
     platform = 'x'
 
-    def __init__(self, browser: Browser, tenant: Optional[str] = None):
+    def __init__(self, browser: Browser, tenant: Optional[str] = None, storage_state: Optional[Any] = None):
         self.browser = browser
         self.tenant = tenant
+        self.storage_state = storage_state
 
     async def _new_page(self):
-        storage = storage_state_for(self.platform, self.tenant)
-        context = await self.browser.new_context(storage_state=storage if storage else None, **CONTEXT_OPTS)
+        context = await self.browser.new_context(storage_state=self.storage_state, **CONTEXT_OPTS)
         page = await context.new_page()
         try:
             logger.info("ctx.open platform=%s tenant=%s ctx=%s", self.platform, self.tenant, id(context))
@@ -517,9 +569,9 @@ class XAdapter:
         return []
 
 
-def get_adapter(platform: str, browser: Browser, tenant: Optional[str] = None):
+def get_adapter(platform: str, browser: Browser, tenant: Optional[str] = None, process_images: bool = True, storage_state: Optional[Any] = None):
     if platform == 'instagram':
-        return InstagramAdapter(browser, tenant)
+        return InstagramAdapter(browser, tenant, storage_state=storage_state)
     if platform == 'facebook':
-        return FacebookAdapter(browser, tenant)
-    return XAdapter(browser, tenant)
+        return FacebookAdapter(browser, tenant, process_images=process_images, storage_state=storage_state)
+    return XAdapter(browser, tenant, storage_state=storage_state)

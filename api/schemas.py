@@ -8,6 +8,7 @@ class ProfileIn(BaseModel):
     full_name: Optional[str] = None
     profile_url: Optional[str] = None
     photo_url: Optional[str] = None
+    facebook_id: Optional[str] = None  # Solo aplica para platform='facebook'
 
 class Profile(ProfileIn):
     id: int
@@ -65,6 +66,7 @@ class ScrapeRequest(BaseModel):
     url: str
     platform: Literal['x', 'instagram', 'facebook']
     max_photos: Optional[int] = 5
+    headless: bool = False
 
 class GraphSessionIn(BaseModel):
     platform: Literal['x','instagram','facebook']
@@ -117,9 +119,10 @@ class MultiScrapeRoot(BaseModel):
 
 class MultiScrapeRequest(BaseModel):
     roots: List[MultiScrapeRoot] = Field(..., description="1..5 roots")
-    headless: bool = True
+    headless: bool = False
     max_concurrency: Optional[int] = Field(None, ge=1, le=3)
     persist: bool = True
+    process_images: bool = True
     strict_sessions: bool = False
 
     @validator('roots')
@@ -248,12 +251,12 @@ class AnalysisRequest(BaseModel):
     id_identidad: int = Field(..., description="ID de la identidad digital a analizar")
     context: UserContext
     max_photos: int = Field(10, ge=1, le=50, description="Número máximo de fotos a analizar")
-    headless: bool = Field(True, description="Ejecutar navegador en modo headless")
+    headless: bool = Field(False, description="Ejecutar navegador en modo headless")
     max_depth: int = Field(1, ge=1, le=3, description="Profundidad de análisis (1=solo perfil, 2=amigos)")
     
     # Parámetros opcionales del scraping
     max_photos: int = Field(5, ge=0, le=50)
-    headless: bool = True
+    headless: bool = False
     max_depth: int = Field(2, ge=1, le=3, description="Niveles de relaciones a explorar")
 
 

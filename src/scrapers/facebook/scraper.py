@@ -17,6 +17,14 @@ from src.utils.exceptions import (
     NetworkException
 )
 
+# Integración Oficial Scrapling
+from src.scrapers.facebook.scrapling_spider import (
+    get_profile_data_scrapling,
+    scrap_list_network_scrapling,
+    scrap_photo_engagements_scrapling,
+    export_to_csv,
+)
+
 logger = logging.getLogger(__name__)
 
 
@@ -276,56 +284,19 @@ async def obtener_datos_usuario_facebook(page, perfil_url: str, validate_session
 	if validate_session:
 		await validate_session_integrity(page, account_id=account_id, platform="facebook")
 	
-	# Cerrar modal bloqueante si aparece
-	await cerrar_modal_bloqueante(page)
-
-	# Intentar obtener nombre
-	nombre = None
-	selectores_nombre = [
-		'h1 span',
-		'div[data-pagelet="ProfileTilesFeed_0"] h1 span',
-		'div[role="main"] h1',
-		'h2[dir="auto"]',
-	]
-	for sel in selectores_nombre:
-		el = await page.query_selector(sel)
-		if el:
-			nombre = await get_text(el)
-			if nombre:
-				break
-
-	# Username a partir de la URL
-	current = page.url
-	cleaned = limpiar_url(current)
-	username = cleaned.split('facebook.com/')[-1].strip('/')
-	if '?' in username:
-		username = username.split('?')[0]
-
-	# Intentar obtener foto
-	foto = None
-	foto_selectores = [
-		'image[height][width]',
-		'image[aria-label*="profile"][xlink\:href]',
-		'img[alt*="profile"], img[src*="scontent"]',
-		'image', 'img'
-	]
-	for fs in foto_selectores:
-		try:
-			el = await page.query_selector(fs)
-			if el:
-				src = await get_attr(el, 'xlink:href') or await get_attr(el, 'src')
-				if src and not src.startswith('data:'):
-					foto = src
-					break
-		except Exception:
-			continue
-
-	return {
-		'username': username or 'unknown',
-		'nombre_completo': nombre or username or 'unknown',
-		'foto_perfil': foto or '',
-		'url_usuario': cleaned or perfil_url,
-	}
+	try:
+		# Usando el nuevo motor de Scrapling
+		logger.info("Delegando extracción de perfil a Scrapling Spider...")
+		return await get_profile_data_scrapling(page, perfil_url)
+	except Exception as e:
+		logger.error(f"Error en extracción Scrapling: {e}")
+		return {
+			'username': 'unknown',
+			'nombre_completo': 'unknown',
+			'foto_perfil': '',
+			'url_usuario': perfil_url,
+			'facebook_id': None
+		}
 
 
 # ---------- Navegación a listas ----------
@@ -536,37 +507,26 @@ async def procesar_tarjetas_usuario(page, usuarios: Dict[str, dict], usuario_pri
 				continue
 
 
-# ---------- API públicas ----------
+# ---------- API públicas (Ahora usando Scrapling) ----------
 async def scrap_friends_all(page, perfil_url: str, username: str) -> List[dict]:
-	if not await navegar_a_lista(page, perfil_url, 'friends'):
-		return []
-	# Preferir extractor específico basado en estructura aportada
-	return await extraer_amigos_facebook(page, username)
+	logger.info("Extrayendo amigos via Scrapling Network Interceptor...")
+	return await scrap_list_network_scrapling(page, perfil_url, 'friends_all')
 
 
 async def scrap_followers(page, perfil_url: str, username: str) -> List[dict]:
-	if not await navegar_a_lista(page, perfil_url, 'followers'):
-		return []
-	return await extraer_usuarios_listado(page, 'followers', username)
+	logger.info("Extrayendo followers via Scrapling Network Interceptor...")
+	return await scrap_list_network_scrapling(page, perfil_url, 'followers')
 
 
 async def scrap_followed(page, perfil_url: str, username: str) -> List[dict]:
-	if not await navegar_a_lista(page, perfil_url, 'followed'):
-		return []
-	return await extraer_usuarios_listado(page, 'followed', username)
+	logger.info("Extrayendo following via Scrapling Network Interceptor...")
+	return await scrap_list_network_scrapling(page, perfil_url, 'followed')
 
 
 # Alias similar a Instagram
 async def scrap_lista_facebook(page, perfil_url: str, tipo: str) -> List[dict]:
-	datos = await obtener_datos_usuario_facebook(page, perfil_url)
-	username = datos.get('username', '')
-	if tipo == 'friends_all':
-		return await scrap_friends_all(page, perfil_url, username)
-	if tipo == 'followers':
-		return await scrap_followers(page, perfil_url, username)
-	if tipo == 'followed':
-		return await scrap_followed(page, perfil_url, username)
-	return []
+	logger.info(f"Ruteando solicitud de lista '{tipo}' a Scrapling...")
+	return await scrap_list_network_scrapling(page, perfil_url, tipo)
 
 
 # ---------- Extractor específico de amigos (/friends_all) ----------
@@ -932,7 +892,8 @@ async def abrir_y_scrapear_reacciones_en_comentarios(page, reacciones_dict: Dict
 		return
 
 
-async def scrap_reacciones_fotos(page, perfil_url: str, username: str, max_fotos: int = 5, incluir_comentarios: bool = False) -> List[dict]:
+async def _scrap_reacciones_comentarios_legacy(page, perfil_url: str, max_fotos: int = 5) -> List[dict]:
+	"""Complementa con reacciones dentro de comentarios para preservar el contrato legacy."""
 	if not await navegar_a_fotos(page, perfil_url):
 		return []
 
@@ -941,19 +902,12 @@ async def scrap_reacciones_fotos(page, perfil_url: str, username: str, max_fotos
 
 	for i, photo_url in enumerate(urls, 1):
 		try:
-			# Abrir foto en nueva pestaña para aislar carga (más estable)
 			photo_page = await _open_photo_in_new_tab(page, photo_url)
 			target_page = photo_page or page
-			await target_page.wait_for_timeout(2500)
-			# Abrir reacciones de la foto en la pestaña de la foto
-			await abrir_y_scrapear_modal_reacciones(target_page, reacciones, photo_url)
-			# Opcional: reacciones en comentarios
-			if incluir_comentarios:
-				await abrir_y_scrapear_reacciones_en_comentarios(target_page, reacciones, photo_url)
-			# Pausas para rate limiting
+			await target_page.wait_for_timeout(2000)
+			await abrir_y_scrapear_reacciones_en_comentarios(target_page, reacciones, photo_url)
 			if i % 3 == 0:
 				await asyncio.sleep(2)
-			# Cerrar modal/pestaña
 			await _close_photo_modal_if_open(target_page)
 			if photo_page:
 				try:
@@ -962,6 +916,26 @@ async def scrap_reacciones_fotos(page, perfil_url: str, username: str, max_fotos
 					pass
 		except Exception:
 			continue
+
+	return list(reacciones.values())
+
+
+async def scrap_reacciones_fotos(page, perfil_url: str, username: str, max_fotos: int = 5, incluir_comentarios: bool = False) -> List[dict]:
+	logger.info("Extrayendo reacciones de fotos via Scrapling Network Interceptor...")
+	engagements = await scrap_photo_engagements_scrapling(page, perfil_url, max_photos=max_fotos)
+	reacciones = {
+		item.get('link_usuario'): item
+		for item in engagements.get('reactions', [])
+		if item.get('link_usuario')
+	}
+
+	if incluir_comentarios:
+		logger.info("Complementando con reacciones en comentarios via fallback legacy...")
+		for item in await _scrap_reacciones_comentarios_legacy(page, perfil_url, max_fotos=max_fotos):
+			link = item.get('link_usuario')
+			if link and link not in reacciones:
+				reacciones[link] = item
+
 	return list(reacciones.values())
 
 
@@ -1062,6 +1036,13 @@ async def procesar_comentarios_en_modal_foto(page, comentarios_dict: Dict[str, d
 
 
 async def scrap_comentarios_fotos(page, perfil_url: str, username: str, max_fotos: int = 5) -> List[dict]:
+	logger.info("Extrayendo comentarios de fotos via Scrapling Network Interceptor...")
+	engagements = await scrap_photo_engagements_scrapling(page, perfil_url, max_photos=max_fotos)
+	return engagements.get('comments', [])
+
+
+async def _scrap_comentarios_fotos_legacy(page, perfil_url: str, username: str, max_fotos: int = 5) -> List[dict]:
+	"""Implementación legacy conservada como referencia."""
 	if not await navegar_a_fotos(page, perfil_url):
 		return []
 	urls = await extraer_urls_fotos(page, max_fotos=max_fotos)

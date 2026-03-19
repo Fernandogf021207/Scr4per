@@ -181,7 +181,8 @@ async def ejecutar_analisis_background(
             max_photos=max_photos,
             headless=headless,
             id_usuario=context.get('id_usuario'),
-            image_base_path=image_base_path
+            image_base_path=image_base_path,
+            context=context,
         )
         
         if not result or 'error' in result:
@@ -330,25 +331,25 @@ async def ejecutar_analisis_background(
 
 
 # Helper function para scraping completo (usando adapters como multi_scrape)
-async def _scrape_single_profile(platform: str, username: str, max_photos: int, headless: bool, id_usuario: int, image_base_path: Optional[str] = None):
+async def _scrape_single_profile(platform: str, username: str, max_photos: int, headless: bool, id_usuario: int, image_base_path: Optional[str] = None, context: Optional[dict] = None):
     """
     Scraping completo de un perfil incluyendo seguidores/seguidos.
-    Para Facebook usa FacebookScraperManager con sesiones desde BD.
-    Para otras plataformas usa adapters legacy.
+    Usa adapters para todas las plataformas.
     """
     from ..repositories import upsert_profile, add_relationship
     from src.utils.exceptions import SessionExpiredException, AccountBannedException, SessionNotFoundException
-    from src.services.scraping_service import scraping_service
     import os
     
     conn = get_conn()
     profile_id = None
     
     try:
-        # CASO 1: Facebook - usar FacebookScraperManager con sesiones desde BD
-        if platform == 'facebook':
+        # CASO 1 (legacy): FacebookScraperManager quedó deprecado.
+        # Mantener bloque inactivo para evitar imports rotos y usar flujo unificado por adapters.
+        if platform == 'facebook' and False:
             from src.scrapers.facebook.scraper import FacebookScraperManager
             from src.scrapers.facebook import navigation, scraper as fb_scraper_module
+            from src.services.scraping_service import scraping_service
             
             try:
                 # Obtener sesión activa desde BD
@@ -469,19 +470,22 @@ async def _scrape_single_profile(platform: str, username: str, max_photos: int, 
                     scraping_service.increment_error_count(session_data['id_sesion'])
                 raise
         
-        # CASO 2: Otras plataformas - usar adapters legacy
+        # CASO 2: Otras plataformas - usar adapters (con posible cuenta del pool)
         else:
             from ..deps import storage_state_for
             from ..services.adapters import launch_browser, close_browser, get_adapter
             
-            # Verificar storage_state
-            storage_state = storage_state_for(platform)
-            if not storage_state or not os.path.isfile(storage_state):
+            # Verificar storage_state (prioriza credenciales inyectadas por pool)
+            storage_state_override = context.get('_cookies') if isinstance(context, dict) else None
+            resolved_storage_state = storage_state_override if storage_state_override else storage_state_for(platform)
+            if not resolved_storage_state:
                 raise Exception(f"Storage state no encontrado para {platform}. Inicia sesión primero.")
-            
+            if isinstance(resolved_storage_state, str) and not os.path.isfile(resolved_storage_state):
+                raise Exception(f"Storage state no encontrado para {platform}. Inicia sesión primero.")
+
             # Lanzar browser y obtener adapter
             browser = await launch_browser(headless=headless)
-            adapter = get_adapter(platform, browser, tenant=None)
+            adapter = get_adapter(platform, browser, tenant=None, storage_state=resolved_storage_state)
         
             try:
                 # 1. Obtener perfil principal
@@ -518,6 +522,20 @@ async def _scrape_single_profile(platform: str, username: str, max_photos: int, 
                         commenters = await adapter.get_photo_commenters(username, max_photos)
                     except Exception as e:
                         logger.warning(f"No se pudieron obtener comentarios: {e}")
+
+                # 3b. Instagram: engagement de posts (reacciones + comentarios)
+                if platform == 'instagram':
+                    logger.info(f"Obteniendo reacciones en posts de {username}...")
+                    try:
+                        reactors = await adapter.get_post_reactors(username, max_photos, image_base_path=image_base_path)
+                    except Exception as e:
+                        logger.warning(f"No se pudieron obtener reacciones de Instagram: {e}")
+
+                    logger.info(f"Obteniendo comentarios en posts de {username}...")
+                    try:
+                        commenters = await adapter.get_post_commenters(username, max_photos, image_base_path=image_base_path)
+                    except Exception as e:
+                        logger.warning(f"No se pudieron obtener comentarios de Instagram: {e}")
                 
                 # 4. Guardar en BD
                 with conn.cursor() as cur:

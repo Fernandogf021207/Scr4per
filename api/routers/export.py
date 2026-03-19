@@ -3,20 +3,37 @@ from typing import Union
 import pandas as pd
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
-from ..schemas import ExportInput, MultiExportInput, ExportBlock
+from typing import Any
+
+# Nota: aceptamos varios formatos de payload desde el frontend:
+# - { "perfiles": [...] }
+# - { "profiles": [...] }
+# - []  (array directamente)
 
 router = APIRouter()
 
 @router.post("/export")
-def export_to_excel(payload: Union[ExportInput, MultiExportInput]):
+def export_to_excel(payload: Any):
     try:
-        # El frontend envía un array de perfiles
+        # Normalizar payload: soportar varios formatos
         rows = []
         objetivo_str = ""
-        
-        for perfil in payload.perfiles:
+
+        if isinstance(payload, list):
+            perfiles = payload
+        elif isinstance(payload, dict):
+            perfiles = payload.get('perfiles') or payload.get('profiles') or []
+        else:
+            perfiles = []
+
+        for perfil in perfiles:
             objetivo = perfil.perfil_objetivo or {}
-            relacionados = perfil.perfiles_relacionados or []
+            # perfil puede venir como dict si el frontend no usa Pydantic
+            if isinstance(perfil, dict):
+                objetivo = perfil.get('perfil_objetivo') or perfil.get('objetivo') or objetivo
+                relacionados = perfil.get('perfiles_relacionados') or perfil.get('relacionados') or []
+            else:
+                relacionados = perfil.perfiles_relacionados or []
             
             # Extraer identificador del perfil objetivo
             for key in ["username", "nombre_usuario", "nombre_completo", "full_name", "profile_url", "url_usuario", "updated_at"]:

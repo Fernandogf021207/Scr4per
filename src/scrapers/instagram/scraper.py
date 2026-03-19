@@ -9,6 +9,9 @@ from src.utils.url import normalize_post_url
 import os
 import httpx
 
+# --- Scrapling spider (motor principal) ---
+from src.scrapers.instagram import scrapling_spider as _spider
+
 logger = logging.getLogger(__name__)
 
 async def obtener_foto_perfil_instagram(page):
@@ -74,25 +77,9 @@ async def obtener_nombre_usuario_instagram(page):
         return {'username': 'unknown', 'nombre_completo': 'unknown'}
 
 async def obtener_datos_usuario_principal(page, perfil_url):
-    """Obtener datos del perfil principal"""
-    logger.info("Obteniendo datos del perfil principal de Instagram...")
-    perfil_url = normalize_input_url('instagram', perfil_url)
-    await page.goto(perfil_url)
-    await page.wait_for_timeout(7000)
-    
-    datos_usuario_ig = await obtener_nombre_usuario_instagram(page)
-    username = datos_usuario_ig['username']
-    nombre_completo = datos_usuario_ig['nombre_completo']
-    foto_perfil = await obtener_foto_perfil_instagram(page)
-    
-    logger.info("Usuario detectado: @%s (%s)", username, nombre_completo)
-    
-    return {
-        'username': username,
-        'nombre_completo': nombre_completo,
-        'foto_perfil': foto_perfil or "",
-        'url_usuario': perfil_url
-    }
+    """Obtener datos del perfil principal — delega a Scrapling spider."""
+    logger.info("Obteniendo datos del perfil principal de Instagram (Scrapling)...")
+    return await _spider.get_profile_data_scrapling(page, perfil_url)
 
 async def extraer_usuarios_instagram(page, tipo_lista="seguidores", usuario_principal=""):
     """Extraer usuarios de una lista de Instagram (seguidores o seguidos)"""
@@ -316,31 +303,19 @@ async def navegar_a_lista_instagram(page, perfil_url, tipo_lista="followers"):
         return False
 
 async def scrap_seguidores(page, perfil_url, username):
-    """Scrapear seguidores del usuario"""
-    logger.info("Extrayendo seguidores...")
+    """Scrapear seguidores del usuario — delega a Scrapling spider."""
+    logger.info("Extrayendo seguidores (Scrapling)...")
     try:
-        if await navegar_a_lista_instagram(page, perfil_url, "followers"):
-            seguidores = await extraer_usuarios_instagram(page, "seguidores", username)
-            logger.info("Seguidores encontrados: %d", len(seguidores))
-            return seguidores
-        else:
-            logger.warning("No se pudieron extraer seguidores")
-            return []
+        return await _spider.scrap_list_network_scrapling(page, perfil_url, 'followers')
     except Exception as e:
         logger.warning("Error extrayendo seguidores: %s", e)
         return []
 
 async def scrap_seguidos(page, perfil_url, username):
-    """Scrapear seguidos del usuario"""
-    logger.info("Extrayendo seguidos...")
+    """Scrapear seguidos del usuario — delega a Scrapling spider."""
+    logger.info("Extrayendo seguidos (Scrapling)...")
     try:
-        if await navegar_a_lista_instagram(page, perfil_url, "following"):
-            seguidos = await extraer_usuarios_instagram(page, "seguidos", username)
-            logger.info("Seguidos encontrados: %d", len(seguidos))
-            return seguidos
-        else:
-            logger.warning("No se pudieron extraer seguidos")
-            return []
+        return await _spider.scrap_list_network_scrapling(page, perfil_url, 'following')
     except Exception as e:
         logger.warning("Error extrayendo seguidos: %s", e)
         return []
@@ -493,20 +468,12 @@ async def _abrir_liked_by_y_extraer_usuarios(page, post_url: str):
         return []
 
 async def scrap_reacciones_instagram(page, perfil_url: str, username: str, max_posts: int = 5):
-    """Scrapea usuarios que dieron like (liked_by) en los últimos posts."""
+    """Scrapea usuarios que dieron like (liked_by) en los ultimos posts — delega a Scrapling spider."""
     try:
-        perfil_url = normalize_input_url('instagram', perfil_url)
-        await page.goto(perfil_url)
-        await page.wait_for_timeout(1500)
-        posts = await extraer_posts_del_perfil(page, max_posts=max_posts)
-        resultados = []
-        for i, post in enumerate(posts, 1):
-            likes = await _abrir_liked_by_y_extraer_usuarios(page, post)
-            resultados.extend(likes)
-            if i % 3 == 0:
-                await page.wait_for_timeout(1200)
-        return resultados
-    except Exception:
+        resultado = await _spider.scrap_post_engagements_scrapling(page, perfil_url, username, max_posts)
+        return resultado.get('reactions', [])
+    except Exception as e:
+        logger.warning("Error en scrap_reacciones_instagram: %s", e)
         return []
 
 async def extraer_comentarios_post(page, url_post, post_id):
@@ -911,41 +878,15 @@ async def procesar_comentarios_en_post(page, comentarios_dict, url_post):
         logger.warning(f"Error procesando comentarios: {e}")
 
 async def scrap_comentadores_instagram(page, perfil_url, username, max_posts=5):
-    """Scrapear usuarios que comentaron los posts del usuario"""
-    logger.info("Extrayendo comentarios de los últimos %d posts...", max_posts)
-    
+    """Scrapear usuarios que comentaron los posts del usuario — delega a Scrapling spider."""
+    logger.info("Extrayendo comentarios de los ultimos %d posts (Scrapling)...", max_posts)
     try:
-        await page.goto(perfil_url)
-        await page.wait_for_timeout(3000)
-        
-        urls_posts = await extraer_posts_del_perfil(page, max_posts)
-        
-        comentarios = []
-        for i, url_post in enumerate(urls_posts, 1):
-            logger.info("Procesando comentarios del post %d/%d", i, len(urls_posts))
-            
-            # Intentar extracción normal primero
-            comentarios_post = await extraer_comentarios_post(page, url_post, i)
-            
-            # Si no hay comentarios, intentar con modal
-            if not comentarios_post:
-                logger.info("Intentando extracción en modal...")
-                comentarios_post = await extraer_comentarios_en_modal(page, url_post, i)
-            
-            comentarios.extend(comentarios_post)
-            
-            # Rate limiting cada 3 posts
-            if i % 3 == 0:
-                logger.info("Pausa de rate limiting después de %d posts...", i)
-                await asyncio.sleep(3)
-            else:
-                await asyncio.sleep(2)
-        
-        logger.info("Total de comentarios únicos encontrados: %d", len(comentarios))
+        resultado = await _spider.scrap_post_engagements_scrapling(page, perfil_url, username, max_posts)
+        comentarios = resultado.get('comments', [])
+        logger.info("Comentaristas unicos encontrados: %d", len(comentarios))
         return comentarios
-        
     except Exception as e:
-        logger.exception(f"Error extrayendo comentadores: {e}")
+        logger.exception("Error extrayendo comentadores: %s", e)
         return []
 
 # Funciones alias para mantener compatibilidad

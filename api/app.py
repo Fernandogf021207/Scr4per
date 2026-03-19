@@ -55,8 +55,8 @@ from src.scrapers.x.scraper import (
 from src.scrapers.x.config import X_CONFIG
 from src.utils.url import normalize_input_url, extract_username_from_url, normalize_post_url
 from src.utils.images import local_or_proxy_photo_url
-import re
-import logging
+from api.services.pool_session import checkout_pool_session
+from src.services.session_manager import ResourceExhaustedException
 
 # Load env variables from ./db/.env if present
 load_dotenv(dotenv_path=os.path.join(os.path.dirname(__file__), '..', 'db', '.env'))
@@ -175,22 +175,40 @@ def get_conn():
 # Upsert profile and return id
 
 def upsert_profile(cur, platform: str, username: str, full_name: Optional[str] = None,
-                   profile_url: Optional[str] = None, photo_url: Optional[str] = None) -> int:
+                   profile_url: Optional[str] = None, photo_url: Optional[str] = None,
+                   facebook_id: Optional[str] = None) -> int:
     schema = _schema(platform)
-    cur.execute(
-        f"""
-        INSERT INTO {schema}.profiles(platform, username, full_name, profile_url, photo_url)
-        VALUES (%s, %s, %s, %s, %s)
-        ON CONFLICT (platform, username)
-        DO UPDATE SET
-            full_name = COALESCE(NULLIF(EXCLUDED.full_name, ''),  {schema}.profiles.full_name),
-            profile_url = COALESCE(NULLIF(EXCLUDED.profile_url, ''), {schema}.profiles.profile_url),
-            photo_url = COALESCE(NULLIF(EXCLUDED.photo_url, ''),  {schema}.profiles.photo_url),
-            updated_at = NOW()
-        RETURNING id;
-        """,
-        (platform, username, full_name, profile_url, photo_url)
-    )
+    if platform == 'facebook':
+        cur.execute(
+            f"""
+            INSERT INTO {schema}.profiles(platform, username, full_name, profile_url, photo_url, facebook_id)
+            VALUES (%s, %s, %s, %s, %s, %s)
+            ON CONFLICT (platform, username)
+            DO UPDATE SET
+                full_name   = COALESCE(NULLIF(EXCLUDED.full_name,   ''), {schema}.profiles.full_name),
+                profile_url = COALESCE(NULLIF(EXCLUDED.profile_url, ''), {schema}.profiles.profile_url),
+                photo_url   = COALESCE(NULLIF(EXCLUDED.photo_url,   ''), {schema}.profiles.photo_url),
+                facebook_id = COALESCE(EXCLUDED.facebook_id,            {schema}.profiles.facebook_id),
+                updated_at  = NOW()
+            RETURNING id;
+            """,
+            (platform, username, full_name, profile_url, photo_url, facebook_id)
+        )
+    else:
+        cur.execute(
+            f"""
+            INSERT INTO {schema}.profiles(platform, username, full_name, profile_url, photo_url)
+            VALUES (%s, %s, %s, %s, %s)
+            ON CONFLICT (platform, username)
+            DO UPDATE SET
+                full_name   = COALESCE(NULLIF(EXCLUDED.full_name,   ''), {schema}.profiles.full_name),
+                profile_url = COALESCE(NULLIF(EXCLUDED.profile_url, ''), {schema}.profiles.profile_url),
+                photo_url   = COALESCE(NULLIF(EXCLUDED.photo_url,   ''), {schema}.profiles.photo_url),
+                updated_at  = NOW()
+            RETURNING id;
+            """,
+            (platform, username, full_name, profile_url, photo_url)
+        )
     return cur.fetchone()["id"]
 
 def add_relationship(cur, platform: str, owner_username: str, related_username: str, rel_type: str) -> Optional[int]:
@@ -394,10 +412,15 @@ def create_or_update_profile(p: ProfileIn):
         with get_conn() as conn:
             with conn.cursor() as cur:
                 profile_url = normalize_input_url(p.platform, p.profile_url) if p.profile_url else None
-                pid = upsert_profile(cur, p.platform, p.username, p.full_name, profile_url, p.photo_url)
+                pid = upsert_profile(cur, p.platform, p.username, p.full_name, profile_url, p.photo_url, p.facebook_id)
                 conn.commit()
                 schema = _schema(p.platform)
-                cur.execute(f"SELECT id, platform, username, full_name, profile_url, photo_url FROM {schema}.profiles WHERE id=%s", (pid,))
+                fb_col = "facebook_id" if p.platform == "facebook" else "NULL AS facebook_id"
+                cur.execute(
+                    f"SELECT id, platform, username, full_name, profile_url, photo_url, {fb_col} "
+                    f"FROM {schema}.profiles WHERE id=%s",
+                    (pid,)
+                )
                 row = cur.fetchone()
                 return Profile(**row)
     except Exception as e:
@@ -463,14 +486,9 @@ def create_reaction(r: ReactionIn):
 # ---------- Scraper Orchestrator ----------
 
 def _storage_state_for(platform: str) -> str:
-    """Fallback para código legacy. Nuevas implementaciones deben usar ScrapingService."""
-    if platform == 'facebook':
-        return 'data/storage/facebook_storage_state.json'
-    if platform == 'instagram':
-        return INSTAGRAM_CONFIG.get('storage_state_path')
-    if platform == 'x':
-        return X_CONFIG.get('storage_state_path')
-    return ''
+    from .deps import storage_state_for
+
+    return storage_state_for(platform)
 
 def _extract_username(item: Dict[str, Any]) -> Optional[str]:
     return (item or {}).get('username_usuario') or (item or {}).get('username')
@@ -641,70 +659,66 @@ async def scrape(req: ScrapeRequest):
     url = normalize_input_url(platform, req.url)
     max_photos = req.max_photos or 5
 
-    storage_state = _storage_state_for(platform)
-    if not storage_state or not os.path.exists(storage_state):
-        raise HTTPException(status_code=400, detail=f"Missing or invalid storage_state for {platform}")
-
     # Result accumulators
     perfil_obj: Dict[str, Any] = {}
     relacionados: List[Dict[str, str]] = []
     tipos_presentes: set = set()
 
-    async with async_playwright() as pw:
-        browser = await pw.chromium.launch(headless=True)
-        context = await browser.new_context(storage_state=storage_state)
-        page = await context.new_page()
-        try:
-            # Perfil objetivo y username
-            if platform == 'facebook':
-                datos = await obtener_datos_usuario_facebook(page, url)
-                username = datos.get('username') or 'unknown'
-                perfil_obj = {
-                    'platform': platform,
-                    'username': username,
-                    'full_name': datos.get('nombre_completo') or username,
-                    'profile_url': datos.get('url_usuario') or url,
-                    'photo_url': datos.get('foto_perfil') or '',
-                }
-                # Listas
-                followers = await fb_scrap_followers(page, url, username)
-                following = await fb_scrap_followed(page, url, username)
-                friends = await fb_scrap_friends(page, url, username)
-                # Fotos: comentarios y reacciones (reacciones no se devuelven en JSON, solo DB)
-                commenters = await fb_scrap_comments(page, url, username, max_fotos=max_photos)
-                reactions = await fb_scrap_reactions(page, url, username, max_fotos=max_photos, incluir_comentarios=True)
-            elif platform == 'instagram':
-                datos = await ig_obtener_datos(page, url)
-                username = datos.get('username') or 'unknown'
-                perfil_obj = {
-                    'platform': platform,
-                    'username': username,
-                    'full_name': datos.get('nombre_completo') or username,
-                    'profile_url': datos.get('url_usuario') or url,
-                    'photo_url': datos.get('foto_perfil') or '',
-                }
-                followers = await ig_scrap_followers(page, url, username)
-                following = await ig_scrap_followed(page, url, username)
-                friends = []
-                commenters = await ig_scrap_commenters(page, url, username, max_posts=max_photos)
-                reactions = await ig_scrap_reactions(page, url, username, max_posts=max_photos)
-            elif platform == 'x':
-                datos = await x_obtener_datos(page, url)
-                username = datos.get('username') or 'unknown'
-                perfil_obj = {
-                    'platform': platform,
-                    'username': username,
-                    'full_name': datos.get('nombre_completo') or username,
-                    'profile_url': datos.get('url_usuario') or url,
-                    'photo_url': datos.get('foto_perfil') or '',
-                }
-                followers = await x_scrap_followers(page, url, username)
-                following = await x_scrap_followed(page, url, username)
-                friends = []
-                commenters = await x_scrap_commenters(page, url, username, max_posts=max_photos)
-                reactions = []  # Not implemented for X in current codebase
-            else:
-                raise HTTPException(status_code=400, detail="Unsupported platform")
+    try:
+        async with checkout_pool_session(platform) as pool_session:
+            async with async_playwright() as pw:
+                browser = await pw.chromium.launch(headless=True)
+                context = await browser.new_context(storage_state=pool_session.storage_state)
+                page = await context.new_page()
+                # Perfil objetivo y username
+                if platform == 'facebook':
+                    datos = await obtener_datos_usuario_facebook(page, url)
+                    username = datos.get('username') or 'unknown'
+                    perfil_obj = {
+                        'platform': platform,
+                        'username': username,
+                        'full_name': datos.get('nombre_completo') or username,
+                        'profile_url': datos.get('url_usuario') or url,
+                        'photo_url': datos.get('foto_perfil') or '',
+                        'facebook_id': datos.get('facebook_id') or None,
+                    }
+                    followers = await fb_scrap_followers(page, url, username)
+                    following = await fb_scrap_followed(page, url, username)
+                    friends = await fb_scrap_friends(page, url, username)
+                    commenters = await fb_scrap_comments(page, url, username, max_fotos=max_photos)
+                    reactions = await fb_scrap_reactions(page, url, username, max_fotos=max_photos, incluir_comentarios=True)
+                elif platform == 'instagram':
+                    datos = await ig_obtener_datos(page, url)
+                    username = datos.get('username') or 'unknown'
+                    perfil_obj = {
+                        'platform': platform,
+                        'username': username,
+                        'full_name': datos.get('nombre_completo') or username,
+                        'profile_url': datos.get('url_usuario') or url,
+                        'photo_url': datos.get('foto_perfil') or '',
+                    }
+                    followers = await ig_scrap_followers(page, url, username)
+                    following = await ig_scrap_followed(page, url, username)
+                    friends = []
+                    commenters = await ig_scrap_commenters(page, url, username, max_posts=max_photos)
+                    reactions = await ig_scrap_reactions(page, url, username, max_posts=max_photos)
+                elif platform == 'x':
+                    datos = await x_obtener_datos(page, url)
+                    username = datos.get('username') or 'unknown'
+                    perfil_obj = {
+                        'platform': platform,
+                        'username': username,
+                        'full_name': datos.get('nombre_completo') or username,
+                        'profile_url': datos.get('url_usuario') or url,
+                        'photo_url': datos.get('foto_perfil') or '',
+                    }
+                    followers = await x_scrap_followers(page, url, username)
+                    following = await x_scrap_followed(page, url, username)
+                    friends = []
+                    commenters = await x_scrap_commenters(page, url, username, max_posts=max_photos)
+                    reactions = []
+                else:
+                    raise HTTPException(status_code=400, detail="Unsupported platform")
 
             # Normalize usernames
             followers_usernames = [u for u in ([_extract_username(x) for x in followers] if followers else []) if u]
@@ -751,6 +765,7 @@ async def scrape(req: ScrapeRequest):
                         perfil_obj.get('full_name'),
                         perfil_obj.get('profile_url'),
                         perfil_obj.get('photo_url'),
+                        perfil_obj.get('facebook_id'),
                     )
                     # Index scraped items by username for details
                     by_username: Dict[str, Dict[str, Any]] = {}
@@ -997,9 +1012,8 @@ async def scrape(req: ScrapeRequest):
                     for item in relacionados
                 ],
             }
-        finally:
-            await context.close()
-            await browser.close()
+    except ResourceExhaustedException as exc:
+        raise HTTPException(status_code=503, detail=f"account pool exhausted for {platform}: {exc}") from exc
 
 
 @app.post("/export")

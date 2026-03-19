@@ -32,7 +32,7 @@ class BatchAnalysisRequest(BaseModel):
     
     # Parámetros opcionales del scraping
     max_photos: int = Field(10, ge=0, le=50)
-    headless: bool = True
+    headless: bool = False
     max_depth: int = Field(2, ge=1, le=3)
 
 class BatchAnalysisResponse(BaseModel):

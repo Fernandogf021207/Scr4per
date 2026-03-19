@@ -43,8 +43,24 @@ def load_graph_session(platform: Literal['x','instagram','facebook'], owner_user
                             ftp = get_ftp_client()
                             json_data = ftp.download(platform_ftp, username_ftp, 'graphs', filename)
                             if json_data:
-                                elements = json.loads(json_data.decode('utf-8'))
+                                ftp_elements = json.loads(json_data.decode('utf-8'))
                                 logger.info(f"Loaded graph from FTP: {path}")
+                                # If FTP file seems to contain only edges (no nodes), prefer DB elements
+                                db_elements = row.get('elements')
+                                try:
+                                    has_nodes = False
+                                    if isinstance(ftp_elements, list):
+                                        for el in ftp_elements:
+                                            data = el.get('data') if isinstance(el, dict) else None
+                                            if isinstance(data, dict) and data.get('tipo') == 'perfil':
+                                                has_nodes = True
+                                                break
+                                    if not has_nodes and db_elements:
+                                        elements = db_elements
+                                    else:
+                                        elements = ftp_elements
+                                except Exception:
+                                    elements = ftp_elements
                     except Exception as e:
                         logger.warning(f"Failed to load from FTP ({path}): {e}, falling back to local or DB")
                 
@@ -69,6 +85,29 @@ def save_graph_session(body: dict):
         platform = body.get("platform")
         owner_username = body.get("owner_username")
         elements = body.get("elements") or {}
+        # Normalize input: if frontend submits {nodes: [...], edges: [...]} or {nodes, edges}
+        canonical = None
+        try:
+            if isinstance(elements, dict):
+                # combine nodes+edges into a single list if provided separately
+                nodes = elements.get('nodes') or elements.get('nodos')
+                edges = elements.get('edges') or elements.get('aristas')
+                if isinstance(nodes, list) or isinstance(edges, list):
+                    canonical = []
+                    if isinstance(nodes, list):
+                        canonical.extend(nodes)
+                    if isinstance(edges, list):
+                        canonical.extend(edges)
+                elif 'elements' in elements and isinstance(elements['elements'], list):
+                    canonical = elements['elements']
+                else:
+                    # maybe it's already the flat list or a dict node
+                    canonical = elements
+            else:
+                canonical = elements
+        except Exception:
+            canonical = elements
+        elements = canonical
         style = body.get("style")
         layout = body.get("layout")
         schema = _schema(platform)

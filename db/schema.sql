@@ -214,6 +214,7 @@ CREATE TABLE IF NOT EXISTS red_facebook.profiles (
   full_name   TEXT,
   profile_url TEXT,
   photo_url   TEXT,
+  facebook_id TEXT,                         -- ID numérico de Facebook (opcional)
   created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   CONSTRAINT uq_profiles_fb UNIQUE (platform, username),
@@ -259,8 +260,23 @@ CREATE TABLE IF NOT EXISTS red_facebook.reactions (
 );
 
 CREATE INDEX IF NOT EXISTS idx_fb_profiles_platform_username ON red_facebook.profiles(platform, username);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_fb_profiles_facebook_id ON red_facebook.profiles(facebook_id) WHERE facebook_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_fb_relationships_owner_type ON red_facebook.relationships(owner_profile_id, rel_type);
 CREATE INDEX IF NOT EXISTS idx_fb_posts_owner ON red_facebook.posts(owner_profile_id);
+
+-- Idempotent: add facebook_id column if it doesn't exist yet (migración)
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_schema='red_facebook' AND table_name='profiles' AND column_name='facebook_id'
+  ) THEN
+    ALTER TABLE red_facebook.profiles ADD COLUMN facebook_id TEXT;
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_fb_profiles_facebook_id
+      ON red_facebook.profiles(facebook_id) WHERE facebook_id IS NOT NULL;
+  END IF;
+END
+$$;
 
 COMMIT;
 
